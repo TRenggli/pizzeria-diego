@@ -34,6 +34,8 @@
   };
 
   const pad = (n, len = 8) => String(n).padStart(len, '0');
+  /** Título del papel: lo elige cada sucursal (comprobante, recibo, ticket…) */
+  const docTitle = (o) => (o.paid ? (PZ.store.data.settings.ticket.docTitle || 'Comprobante de pago') : 'Comprobante de pedido');
   const ticketId = (o) => `${pad(PZ.store.data.settings.ticket.pos, 4)}-${pad(o.ticketNumber || 0)}`;
 
   /* ======================= Estilos del papel ======================= */
@@ -97,7 +99,7 @@
                      <div class="row" style="font-weight:800"><span>SU VUELTO</span><span>${U.money(p.tendered - p.amount)}</span></div>`;
           }
           if (p.ref) extra += `<div class="sub">Operación: ${U.esc(p.ref)}</div>`;
-          return `<div class="row"><span>${L.method[p.method] || p.method}</span><span>${U.money(p.amount)}</span></div>${extra}`;
+          return `<div class="row"><span>${L.method[p.method] || p.method}${p.cardType ? ' de ' + U.esc(p.cardType) : ''}</span><span>${U.money(p.amount)}</span></div>${extra}`;
         }).join('')
       : '';
 
@@ -121,7 +123,7 @@
         ${b.cuit ? '<br>CUIT: ' + U.esc(b.cuit) + (b.taxCondition ? ' · ' + U.esc(b.taxCondition) : '') : ''}
       </div>
       <hr class="solid">
-      <div class="doc"><span>${o.paid ? 'COMPROBANTE DE PAGO' : 'COMPROBANTE DE PEDIDO'}</span></div>
+      <div class="doc"><span>${U.esc(docTitle(o).toUpperCase())}</span></div>
       <div class="row"><span>${o.paid ? 'Nº ' + ticketId(o) : 'Pedido'}</span><span>Pedido #${o.number}</span></div>
       <div class="row small"><span>Fecha: ${U.date(o.paidAt || o.createdAt)}</span><span>Hora: ${U.time(o.paidAt || o.createdAt)}</span></div>
       <div class="row small"><span>${L.type[o.type] || o.type}${o.type === 'mesa' && o.table ? ' ' + U.esc(o.table) : ''}</span><span>Atendió: ${U.esc(seller ? seller.name : '-')}</span></div>
@@ -352,7 +354,7 @@
     if (b.phone) e.ln('Tel/WhatsApp: ' + b.phone);
     if (b.cuit) e.ln('CUIT: ' + b.cuit + (b.taxCondition ? ' - ' + b.taxCondition : ''));
     e.align('l').sep('=');
-    e.bold(true).ln(o.paid ? 'COMPROBANTE DE PAGO' : 'COMPROBANTE DE PEDIDO').bold(false);
+    e.bold(true).ln(docTitle(o).toUpperCase()).bold(false);
     e.pair(o.paid ? 'N ' + ticketId(o) : 'Pedido', 'Pedido #' + o.number);
     e.pair('Fecha: ' + U.date(o.paidAt || o.createdAt), 'Hora: ' + U.time(o.paidAt || o.createdAt));
     e.pair((L.type[o.type] || o.type) + (o.type === 'mesa' && o.table ? ' ' + o.table : ''), 'Atendio: ' + (seller ? seller.name : '-'));
@@ -375,7 +377,7 @@
     if (o.paid) {
       e.sep().bold(true).ln('FORMA DE PAGO').bold(false);
       o.payments.forEach((p) => {
-        e.pair(L.method[p.method] || p.method, U.money(p.amount));
+        e.pair((L.method[p.method] || p.method) + (p.cardType ? ' de ' + p.cardType : ''), U.money(p.amount));
         if (p.method === 'efectivo' && p.tendered > p.amount) {
           e.pair('  Abono con', U.money(p.tendered));
           e.bold(true).pair('  SU VUELTO', U.money(p.tendered - p.amount)).bold(false);
@@ -498,7 +500,7 @@
     const st = PZ.store.data.settings, L = PZ.labels;
     const lines = [];
     lines.push(`*${st.business.name}*`);
-    lines.push(o.paid ? `Comprobante de pago Nº ${ticketId(o)}` : `Pedido #${o.number}`);
+    lines.push(o.paid ? `${docTitle(o)} Nº ${ticketId(o)}` : `Pedido #${o.number}`);
     lines.push(U.dateTime(o.paidAt || o.createdAt));
     lines.push('');
     o.items.forEach((it) => {

@@ -410,6 +410,7 @@
               <div class="spacer"></div>
               ${chips}
               <span class="clock"></span>
+              <button class="icon-btn help-btn" data-a="help" title="Ayuda de esta pantalla" aria-label="Ayuda">❓</button>
               <button class="user-pill" data-a="user" aria-label="Mi usuario">${PZ.profile.avatar(PZ.profile.me, name, 32)}<span class="u-name">${U.esc(name)}</span></button>
               <svg class="drip" viewBox="0 0 1200 14" preserveAspectRatio="none" aria-hidden="true">
                 <path d="M0 0H1200V3H0Z"/>
@@ -420,6 +421,7 @@
                 <path class="d" d="M1100 2 q7 0 7 6 q0 5 -7 5 q-7 0 -7 -5 q0 -6 7 -6z"/>
               </svg>
             </header>
+            <div class="help-slot" id="help-slot"></div>
             <main class="content" id="view"></main>
           </div>
           <nav class="bottom-nav">
@@ -437,6 +439,7 @@
       on('operate', () => App.branchPicker());
       on('platform', () => App.openPlatform());
       on('sync', App.syncInfo);
+      on('help', () => PZ.help.open(App.currentView));
       on('cash', () => (A.can('caja') ? App.go('caja') : null));
       on('more', () => {
         const extra = [];
@@ -476,7 +479,8 @@
       if (!chip) return;
       const s = S.currentSession();
       chip.className = 'cash-chip ' + (s ? 'open' : 'closed');
-      chip.innerHTML = `<span class="dot"></span><span class="c-txt">${s ? 'Caja abierta' : 'Caja cerrada'}</span>`;
+      chip.innerHTML = `<span class="c-ico">💰</span><span class="dot"></span><span class="c-txt">${s ? 'Caja abierta' : 'Caja cerrada'}</span>`;
+      chip.title = s ? 'Caja abierta' : 'Caja cerrada';
       const active = S.data.orders.filter((o) => !o.voided && !['entregado', 'cancelado'].includes(o.status)).length;
       r.querySelectorAll('.n-count').forEach((el) => {
         el.textContent = active;
@@ -606,6 +610,8 @@
       void el.offsetWidth;
       el.style.animation = '';
       App.currentView = id;
+      const slot = document.getElementById('help-slot');
+      if (slot) { slot.innerHTML = ''; PZ.help.banner(slot, id); }
       try {
         cleanup = view.render(el, params) || null;
       } catch (e) {
@@ -635,7 +641,7 @@
     window.addEventListener('hashchange', () => App.route());
     S.onChange(() => App.refreshChrome());
     S.onStatus((st) => App.refreshSync(st));
-    new MutationObserver(U.debounce(() => labelTables(document.body), 60)).observe(document.body, { childList: true, subtree: true });
+    new MutationObserver(() => labelTables(document.body)).observe(document.body, { childList: true, subtree: true });
 
     // Cambios de otros equipos: se redibujan las pantallas "en vivo"
     S.onRemoteHook = U.debounce(() => {

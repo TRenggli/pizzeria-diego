@@ -50,6 +50,12 @@ jobs:
         run: |
           mkdir _site
           cp -r index.html manifest.webmanifest sw.js css js img vendor _site/
+          # Cada publicación pide archivos con la versión nueva: ningún celular
+          # mezcla archivos viejos (guardados) con nuevos.
+          V="${GITHUB_SHA::8}"
+          sed -i -E "s#(src|href)=\"((js|css|vendor)/[^\"?]+\.(js|css))\"#\1=\"\2?v=$V\"#g" _site/index.html
+          sed -i "s#const CACHE = 'pizzeria-#const CACHE = 'pizzeria-$V-#" _site/sw.js
+          grep -c "?v=$V" _site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

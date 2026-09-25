@@ -72,6 +72,7 @@
             <label class="field"><span>Ancho del papel</span><select data-k="ticket.width" data-num><option value="80">80 mm (común)</option><option value="58">58 mm (portátil)</option></select></label>
             <label class="field"><span>Copias del comprobante</span><select data-k="ticket.copies" data-num><option value="1">1</option><option value="2">2 (original + copia)</option></select></label>
             <label class="field"><span>Punto de venta (Nº)</span><input data-k="ticket.pos" data-num inputmode="numeric"></label>
+            <label class="field"><span>Título del papel</span><select data-k="ticket.docTitle"><option>Comprobante de pago</option><option>Recibo</option><option>Ticket</option><option>Comprobante de venta</option></select></label>
             <label class="field"><span>QR al pie del ticket</span><select data-k="ticket.qrMode"><option value="instagram">Instagram del local</option><option value="custom">Link propio (reseñas, menú…)</option><option value="none">Sin QR</option></select></label>
           </div>
           ${t.qrMode === 'custom' ? '<label class="field"><span>Link del QR</span><input data-k="ticket.qrText" placeholder="https://g.page/r/... (reseñas de Google)"></label>' : ''}

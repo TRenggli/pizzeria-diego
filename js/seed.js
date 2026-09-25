@@ -24,6 +24,7 @@
           logo: null,
           qrMode: 'instagram',
           qrText: '',
+          docTitle: 'Comprobante de pago',
           footer: '¡Gracias por elegirnos! Buen provecho',
           legend: 'Comprobante no válido como factura',
           pos: 1,

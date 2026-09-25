@@ -402,6 +402,7 @@
       const P = st.payments;
       const methods = ['efectivo', 'transferencia', 'qr'].concat(P.enableCard ? ['tarjeta'] : []);
       let method = 'efectivo';
+      let cardType = 'débito';
       let split = false;
       let partials = [];
       let resolved = false;
@@ -506,7 +507,11 @@
           detail.innerHTML += `<label class="field mt"><span>Nº de operación (opcional)</span><input class="ref"></label>
             <label class="check"><input type="checkbox" class="verified"> Verifiqué el pago en la app</label>`;
         } else if (method === 'tarjeta') {
-          detail.innerHTML = `<label class="field"><span>Cupón / últimos 4 dígitos (opcional)</span><input class="ref"></label>`;
+          // Posnet de cualquier marca: se cobra en el posnet y acá se registra
+          detail.innerHTML = `<p class="small muted" style="margin-top:0">Pasá la tarjeta en tu posnet por <b>${U.money(d)}</b> y después confirmá acá: el comprobante sale igual.</p>
+            <div class="seg mb card-type"><button data-ct="débito" class="${cardType === 'débito' ? 'on' : ''}">Débito</button><button data-ct="crédito" class="${cardType === 'crédito' ? 'on' : ''}">Crédito</button></div>
+            <label class="field"><span>Cupón / últimos 4 dígitos (opcional)</span><input class="ref" inputmode="numeric"></label>`;
+          detail.querySelectorAll('[data-ct]').forEach((b) => b.onclick = () => { cardType = b.dataset.ct; detail.querySelectorAll('[data-ct]').forEach((x) => x.classList.toggle('on', x === b)); });
         }
         detail.querySelectorAll('[data-copy]').forEach((b) => b.onclick = async () => {
           try { await navigator.clipboard.writeText(b.dataset.copy); PZ.toast('Copiado'); } catch (e) { PZ.toast('No se pudo copiar', 'warn'); }
@@ -535,7 +540,7 @@
             if (tv && tv < part) return PZ.toast('El efectivo entregado no alcanza', 'warn');
             tendered = tv || part;
           }
-          partials.push({ method, amount: part, tendered, change: tendered - part, ref: ref.trim() });
+          partials.push({ method, amount: part, tendered, change: tendered - part, ref: ref.trim(), ...(method === 'tarjeta' ? { cardType } : {}) });
           if (due() > 0) return draw();
         }
         let payments;
@@ -547,7 +552,7 @@
             if (tv && tv < d) return PZ.toast(`Faltan ${U.money(d - tv)}`, 'warn');
             tendered = tv || d;
           }
-          payments = [{ method, amount: d, tendered, change: tendered - d, ref: ref.trim() }];
+          payments = [{ method, amount: d, tendered, change: tendered - d, ref: ref.trim(), ...(method === 'tarjeta' ? { cardType } : {}) }];
         }
         resolved = true;
         const out = {

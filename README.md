@@ -27,6 +27,15 @@ Un negocio de una sola persona funciona igual: el dueño tiene todas las funcion
 - **Equipo:** por persona: cuánto cobró, tickets, ticket promedio, descuentos, anulaciones, diferencias en los cierres de caja que hizo, sueldo pagado y cuánto vende por cada $1 de sueldo.
 - **Menú modelo:** menú oficial del negocio que se copia a las sucursales nuevas; se puede mandar a las existentes (solo precios, agregar faltantes o reemplazar) y aumentar precios en varias sucursales a la vez.
 
+## Ayudas y uso en cualquier equipo
+
+- Cada pantalla muestra un **consejo** la primera vez que se entra, y el botón **❓** de la barra superior abre su guía cuando se necesite.
+- Revisado en celular chico (360 px), celular (375 px), tablet vertical (768 px), tablet horizontal (1024 px) y compu, con todos los perfiles: sin scroll horizontal y con botones del tamaño del dedo.
+
+## Comprobantes sin posnet integrado
+
+El comprobante se imprime **siempre**, se pague como se pague (efectivo, transferencia, QR o tarjeta en un posnet de cualquier marca). En *Configuración → Ticket e impresora* se elige si el papel dice **Comprobante de pago, Recibo, Ticket o Comprobante de venta**. Con tarjeta se elige débito o crédito y queda impreso.
+
 ## Seguridad del dinero (la base de datos manda)
 
 - Una venta cobrada no se puede modificar: solo cambian su estado, repartidor y notas.
