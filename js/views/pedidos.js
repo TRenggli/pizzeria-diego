@@ -149,14 +149,34 @@
       return;
     }
     if (act === 'cancel') {
-      if (!(await PZ.auth.requireAdmin('Cancelar un pedido requiere un administrador'))) return;
-      const reason = await PZ.prompt('Motivo de la cancelación', { title: `Cancelar pedido #${o.number}` });
-      if (reason == null) return;
-      S.voidOrder(o.id, reason);
-      PZ.toast(`Pedido #${o.number} cancelado`, 'warn');
-      render(el);
+      if (await PZ.voidFlow(o, 'Cancelar')) render(el);
     }
   }
+
+  /**
+   * Anular / cancelar una venta: pide autorización de encargado si hace
+   * falta, el motivo, y la anula en el servidor. Devuelve true si se anuló.
+   */
+  PZ.voidFlow = async function (o, verb = 'Anular') {
+    if (!navigator.onLine) { PZ.toast('Para anular hace falta conexión a internet', 'warn'); return false; }
+    const auth = await PZ.auth.requireAdmin(`${verb} una venta requiere un encargado`);
+    if (!auth) return false;
+    try {
+      const reason = await PZ.prompt('Motivo', { title: `${verb} pedido #${o.number}` });
+      if (reason == null) return false;
+      if (!reason.trim()) { PZ.toast('Tenés que indicar el motivo', 'warn'); return false; }
+      const client = auth === true ? null : auth;
+      if (S.order(o.id)) await S.voidOrder(o.id, reason.trim(), client);
+      else Object.assign(o, await PZ.cloud.voidOrder(S.ctx.orgId, o.id, reason.trim(), client));
+      PZ.toast(o.paid ? `Anulado. Devolvé ${U.money(o.total)} al cliente si corresponde.` : `Pedido #${o.number} cancelado`, 'warn', 4500);
+      return true;
+    } catch (e) {
+      PZ.toast(e.message || 'No se pudo anular', 'err', 5000);
+      return false;
+    } finally {
+      PZ.auth.release(auth);
+    }
+  };
 
   async function pay(o) {
     if (!(await PZ.cash.ensureOpen())) return false;

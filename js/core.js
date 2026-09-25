@@ -110,6 +110,42 @@ window.PZ.views = window.PZ.views || {};
       }
     },
 
+    /** CUIL/CUIT argentino: 11 dígitos con dígito verificador (módulo 11) */
+    cuilDigits: (v) => String(v || '').replace(/\D/g, ''),
+    validCuil(v) {
+      const d = PZ.util.cuilDigits(v);
+      if (!/^(20|23|24|25|26|27|30|33|34)\d{9}$/.test(d)) return false;
+      const w = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+      const sum = w.reduce((a, x, i) => a + x * Number(d[i]), 0);
+      let check = 11 - (sum % 11);
+      if (check === 11) check = 0;
+      if (check === 10) return false;
+      return check === Number(d[10]);
+    },
+    formatCuil(v) {
+      const d = PZ.util.cuilDigits(v);
+      return d.length === 11 ? `${d.slice(0, 2)}-${d.slice(2, 10)}-${d.slice(10)}` : d;
+    },
+
+    /**
+     * Rango de fechas común a todas las pantallas.
+     * key: hoy | ayer | 7d | 30d | mes | mesant | custom ({from:'YYYY-MM-DD', to})
+     */
+    rangeBounds(key, custom = {}, now = new Date()) {
+      const t = PZ.util.startOfDay(now).getTime();
+      const end = now.getTime();
+      switch (key) {
+        case 'hoy': return [t, end];
+        case 'ayer': return [t - 864e5, t - 1];
+        case '7d': return [t - 6 * 864e5, end];
+        case '30d': return [t - 29 * 864e5, end];
+        case 'mes': return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), end];
+        case 'mesant': return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime() - 1];
+        case 'custom': return [custom.from ? new Date(custom.from + 'T00:00').getTime() : t, custom.to ? new Date(custom.to + 'T23:59:59').getTime() : end];
+        default: return [t, end];
+      }
+    },
+
     phoneForWa(phone) {
       let p = String(phone || '').replace(/\D/g, '');
       if (!p) return '';

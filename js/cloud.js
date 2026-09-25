@@ -48,8 +48,9 @@
       if (error) return null;
       const uid = data.user.id;
       const { data: m } = await tmp.from('members').select('role, active, branch_ids, org_id').eq('user_id', uid);
-      try { await tmp.auth.signOut({ scope: 'local' }); } catch (e) { /* noop */ }
-      return m || [];
+      // La sesión temporal queda abierta para firmar la acción autorizada;
+      // se cierra con PZ.auth.release().
+      return { client: tmp, members: m || [] };
     },
 
     async updateMyPassword(password) {
@@ -160,6 +161,75 @@
       return data;
     },
 
+    /* ---------------- Perfiles ---------------- */
+    async myProfile() {
+      const s = await C.session();
+      if (!s) return null;
+      const { data } = await sb.from('profiles').select('*').eq('user_id', s.user.id).maybeSingle();
+      return data || { user_id: s.user.id };
+    },
+    async profiles(userIds) {
+      if (!userIds.length) return {};
+      const { data, error } = await sb.from('profiles').select('*').in('user_id', userIds);
+      if (error) throw error;
+      return Object.fromEntries((data || []).map((p) => [p.user_id, p]));
+    },
+    async saveProfile(patch) {
+      const s = await C.session();
+      const { error } = await sb.from('profiles').upsert({ user_id: s.user.id, ...patch, updated_at: new Date().toISOString() });
+      if (error) throw new Error(/cuil/i.test(error.message) ? 'CUIL inválido' : error.message);
+    },
+    /** Sube la foto (ya reducida) y devuelve la URL pública */
+    async uploadAvatar(blob) {
+      const s = await C.session();
+      const path = `${s.user.id}/avatar-${Date.now()}.jpg`;
+      const { error } = await sb.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+      if (error) throw error;
+      return sb.storage.from('avatars').getPublicUrl(path).data.publicUrl;
+    },
+    changeEmail(email) { return C.invoke('profile', { action: 'change_email', email }); },
+
+    /* ---------------- Ventas ---------------- */
+    /** Anula en el servidor (solo dueño o encargado). client = sesión del encargado que autorizó. */
+    async voidOrder(orgId, id, reason, client) {
+      const { data, error } = await (client || sb).rpc('void_order', { p_org: orgId, p_id: id, p_reason: reason });
+      if (error) throw new Error(error.message);
+      return data;
+    },
+    /** Ventas de un período que no está en el equipo (historial viejo) */
+    async ordersRange(branchId, from, to) {
+      let out = [];
+      for (let i = 0; ; i += 1000) {
+        const { data, error } = await sb.from('orders').select('id, data').eq('branch_id', branchId)
+          .gte('created_at', new Date(from).toISOString()).lte('created_at', new Date(to).toISOString())
+          .order('created_at').range(i, i + 999);
+        if (error) throw error;
+        out = out.concat(data.map((r) => ({ ...r.data, id: r.id })));
+        if (data.length < 1000) break;
+      }
+      return out;
+    },
+
+    /* ---------------- Registro de errores ---------------- */
+    async reportError(message, { stack = '', context = '' } = {}) {
+      const key = String(message).slice(0, 200);
+      C._reported = C._reported || new Map();
+      const n = C._reported.get(key) || 0;
+      if (n >= 2 || C._reported.size > 25) return; // no inundar
+      C._reported.set(key, n + 1);
+      const row = {
+        message: String(message).slice(0, 1000), stack: String(stack || '').slice(0, 4000), context: String(context || '').slice(0, 500),
+        url: location.href.slice(0, 500), user_agent: navigator.userAgent.slice(0, 300), version: CFG.version,
+        org_id: PZ.store && PZ.store.ctx.orgId, branch_id: PZ.store && PZ.store.ctx.branchId,
+      };
+      try { await sb.from('client_errors').insert(row); } catch (e) { /* sin conexión: se pierde, no importa */ }
+    },
+    async errors(limit = 150) {
+      const { data, error } = await sb.from('client_errors').select('*').order('at', { ascending: false }).limit(limit);
+      if (error) throw error;
+      return data || [];
+    },
+
     /** Tiempo real a nivel negocio (panel del dueño) */
     subscribeOrg(orgId, onEvent) {
       C.unsubscribe();
@@ -267,6 +337,18 @@
     unsubscribe() {
       if (C.channel) { sb.removeChannel(C.channel); C.channel = null; }
     },
+  });
+
+  // Errores no controlados de la app → registro para el panel de plataforma
+  window.addEventListener('error', (e) => {
+    if (!e.message || /ResizeObserver|Script error/i.test(e.message)) return;
+    C.reportError(e.message, { stack: e.error && e.error.stack, context: `${e.filename || ''}:${e.lineno || ''}` });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason || {};
+    const msg = r.message || String(r);
+    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) return; // cortes de internet: no son errores de la app
+    C.reportError(msg, { stack: r.stack, context: 'promesa sin manejar' });
   });
 
   window.addEventListener('online', () => { C.online = true; PZ.store && PZ.store.onOnline(); });

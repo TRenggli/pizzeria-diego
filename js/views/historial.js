@@ -5,13 +5,17 @@
   const U = PZ.util;
   const S = PZ.store;
   const f = { from: '', to: '', method: '', type: '', q: '', state: '' };
+  let source = [];   // ventas del período (del equipo o traídas de la nube)
+  let reqId = 0;
+
+  const period = () => [
+    f.from ? new Date(f.from + 'T00:00').getTime() : U.startOfDay().getTime() - 6 * 864e5,
+    f.to ? new Date(f.to + 'T23:59:59').getTime() : Date.now() + 864e5,
+  ];
 
   function filtered() {
-    const from = f.from ? new Date(f.from + 'T00:00').getTime() : U.startOfDay().getTime() - 6 * 864e5;
-    const to = f.to ? new Date(f.to + 'T23:59:59').getTime() : Date.now() + 864e5;
     const q = U.stripAccents(f.q.toLowerCase().trim());
-    return S.data.orders.filter((o) => {
-      if (o.createdAt < from || o.createdAt > to) return false;
+    return source.filter((o) => {
       if (f.type && o.type !== f.type) return false;
       if (f.method && !(o.payments || []).some((p) => p.method === f.method)) return false;
       if (f.state === 'paid' && (!o.paid || o.voided)) return false;
@@ -42,8 +46,21 @@
         <div class="row-flex space-between"><div class="summary"></div><button class="btn ghost sm" data-a="csv">⬇️ Exportar Excel (CSV)</button></div>
       </div>
       <div class="card"><div class="list"></div></div>`;
-    el.querySelectorAll('[data-f]').forEach((inp) => inp.addEventListener(inp.type === 'search' ? 'input' : 'change', U.debounce(() => { f[inp.dataset.f] = inp.value; drawList(el); }, 200)));
+    el.querySelectorAll('[data-f]').forEach((inp) => inp.addEventListener(inp.type === 'search' ? 'input' : 'change', U.debounce(() => {
+      f[inp.dataset.f] = inp.value;
+      if (inp.dataset.f === 'from' || inp.dataset.f === 'to') load(el); else drawList(el);
+    }, 200)));
     el.querySelector('[data-a=csv]').onclick = () => exportCsv();
+    load(el);
+  }
+
+  async function load(el) {
+    const my = ++reqId;
+    const [from, to] = period();
+    const box = el.querySelector('.list');
+    if (from < S.localSince() && navigator.onLine) box.innerHTML = '<div class="empty"><span class="e-ico">☁️</span>Buscando ventas anteriores en la nube…</div>';
+    try { source = await S.ordersInRange(from, to); } catch (e) { box.innerHTML = `<div class="empty">No se pudieron traer las ventas: ${U.esc(e.message)}</div>`; return; }
+    if (my !== reqId || !el.isConnected) return;
     drawList(el);
   }
 
@@ -64,15 +81,10 @@
         <td class="right"><b>${U.money(o.total)}</b></td>
         <td class="actions"><button class="btn sm ghost" data-v="${o.id}" title="Ver / reimprimir">🧾</button>${!o.voided ? `<button class="btn sm ghost" data-x="${o.id}" title="Anular">🚫</button>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>${list.length > 400 ? '<p class="small muted center">Mostrando los primeros 400. Acotá las fechas para ver más.</p>' : ''}`;
-    box.querySelectorAll('[data-v]').forEach((b) => b.onclick = () => PZ.ticket.preview(S.order(b.dataset.v)));
+    box.querySelectorAll('[data-v]').forEach((b) => b.onclick = () => PZ.ticket.preview(list.find((x) => x.id === b.dataset.v)));
     box.querySelectorAll('[data-x]').forEach((b) => b.onclick = async () => {
-      const o = S.order(b.dataset.x);
-      if (!(await PZ.auth.requireAdmin('Anular requiere un administrador'))) return;
-      const reason = await PZ.prompt('Motivo de la anulación', { title: `Anular pedido #${o.number}` });
-      if (reason == null) return;
-      S.voidOrder(o.id, reason);
-      PZ.toast(o.paid ? `Anulado. Devolvé ${U.money(o.total)} al cliente si corresponde.` : 'Pedido anulado', 'warn', 4500);
-      drawList(el);
+      const o = list.find((x) => x.id === b.dataset.x);
+      if (await PZ.voidFlow(o, 'Anular')) drawList(el);
     });
   }
 

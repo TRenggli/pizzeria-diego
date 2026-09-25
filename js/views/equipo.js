@@ -11,18 +11,13 @@
   let range = '30d';
   let orgBranch = '';
 
-  function bounds() {
-    const t = U.startOfDay().getTime();
-    const now = new Date();
-    if (range === '7d') return [t - 6 * 864e5, Date.now()];
-    if (range === 'mes') return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), Date.now()];
-    if (range === 'mesant') return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime() - 1];
-    return [t - 29 * 864e5, Date.now()];
-  }
+  const bounds = () => U.rangeBounds(range);
   const roleBadge = (r) => `<span class="badge ${r === 'owner' ? 'pri' : r === 'admin' ? 'warn' : ''}">${A().ROLES[r].label}</span>`;
   const branchNames = (ids) => (!ids || !ids.length ? 'Todas' : ids.map((id) => S.branchName(id) || '?').join(', '));
   const inBranch = (m, bid) => m.role === 'owner' || !(m.branch_ids || []).length || m.branch_ids.includes(bid);
-  const shareText = (code, inv) => `¡Hola! Te sumo al sistema de ${S.ctx.org ? S.ctx.org.name : 'la pizzería'} (sucursal ${S.branchName(inv.branch_id)}).\n\n1. Entrá a ${location.origin + location.pathname}\n2. Tocá "Tengo un código de sucursal"\n3. Ingresá el código: *${code}*\n\nVence el ${U.date(inv.expires_at)}.`;
+  /** Enlace que abre directo el alta con el código cargado */
+  const inviteLink = (code) => `${location.origin}${location.pathname}?codigo=${encodeURIComponent(code)}`;
+  const shareText = (code, inv) => `¡Hola! Te sumo al equipo de ${S.ctx.org ? S.ctx.org.name : 'la pizzería'} (sucursal ${S.branchName(inv.branch_id)}) 🍕\n\nEntrá a este enlace y elegí tu usuario y contraseña:\n${inviteLink(code)}\n\nSi te pide un código: *${code}*\nVence el ${U.date(inv.expires_at)}.`;
 
   /* =====================================================================
      Códigos de invitación
@@ -59,10 +54,13 @@
         title: '🔑 Código listo',
         size: 'sm',
         body: `<p class="muted" style="margin-top:0">Para sumar un/a <b>${A().ROLES[inv.role].label}</b> en <b>${U.esc(S.branchName(inv.branch_id))}</b>. Sirve una sola vez y vence el ${U.date(inv.expires_at)}.</p>
+          <div class="invite-qr">${U.qrSvg(inviteLink(inv.code), 5, 2)}<small>Escaneá con la cámara del celular</small></div>
           <div class="code-big">${U.esc(inv.code)}</div>
-          <p class="small muted">La persona entra a la página, toca <b>“Tengo un código de sucursal”</b>, lo ingresa y elige su usuario y contraseña.</p>`,
-        footer: '<button class="btn ghost" data-a="cp">📋 Copiar</button><button class="btn primary" data-a="wa">💬 Enviar por WhatsApp</button>',
+          <div class="invite-link"><input readonly value="${U.esc(inviteLink(inv.code))}"><button class="btn sm ghost" data-a="cplink">Copiar enlace</button></div>
+          <p class="small muted">Con el enlace o el QR, la persona entra directo al alta con el código ya cargado y elige su usuario y contraseña. Al ingresar le vamos a pedir su teléfono y CUIL.</p>`,
+        footer: '<button class="btn ghost" data-a="cp">📋 Copiar mensaje</button><button class="btn primary" data-a="wa">💬 Enviar por WhatsApp</button>',
       });
+      m.el.querySelector('[data-a=cplink]').onclick = async () => { try { await navigator.clipboard.writeText(inviteLink(inv.code)); PZ.toast('Enlace copiado'); } catch (e) { m.el.querySelector('.invite-link input').select(); } };
       m.el.querySelector('[data-a=cp]').onclick = async () => { try { await navigator.clipboard.writeText(text); PZ.toast('Copiado'); } catch (e) { PZ.toast(inv.code, 'info', 6000); } };
       m.el.querySelector('[data-a=wa]').onclick = () => window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
     },
@@ -164,14 +162,15 @@
   /* =====================================================================
      Tabla de rendimiento
      ===================================================================== */
-  function perfTable(people, stats) {
+  function perfTable(people, stats, profiles = {}) {
     const rows = people.map((m) => ({ m, s: stats[m.user_id] || {} })).sort((a, b) => (b.s.sales || 0) - (a.s.sales || 0));
     const top = rows[0] && rows[0].s.sales ? rows[0].m.user_id : null;
     return `<div class="table-wrap"><table class="tbl"><thead><tr>
       <th>Persona</th><th>Rol</th><th class="right">Cobró</th><th class="right">Tickets</th><th class="right">Ticket prom.</th>
       <th class="right">Descuentos</th><th class="right">Anulaciones</th><th class="right">Dif. de caja</th><th class="right">Sueldo pagado</th><th class="right">Vende por $1 de sueldo</th><th></th></tr></thead><tbody>
       ${rows.map(({ m, s }) => `<tr class="${m.active ? '' : 'voided'}">
-        <td><b>${m.user_id === top ? '🏆 ' : ''}${U.esc(m.name)}</b><div class="small muted">${U.esc(m.username)}${m.last_login ? ' · últ. ingreso ' + U.date(m.last_login) : ''}</div></td>
+        <td><div class="person">${PZ.profile.avatar(profiles[m.user_id], m.name, 36)}<div><b>${m.user_id === top ? '🏆 ' : ''}${U.esc(m.name)}</b><div class="small muted">${U.esc(m.username)}${m.last_login ? ' · últ. ingreso ' + U.date(m.last_login) : ''}</div>
+          ${profiles[m.user_id] ? `<div class="small">${profiles[m.user_id].phone ? `📞 <a href="https://wa.me/${U.phoneForWa(profiles[m.user_id].phone)}" target="_blank" rel="noopener">${U.esc(profiles[m.user_id].phone)}</a>` : ''}${profiles[m.user_id].cuil ? ` · CUIL ${U.formatCuil(profiles[m.user_id].cuil)}` : ''}</div>` : '<div class="small muted">⚠️ Perfil sin completar</div>'}</div></div></td>
         <td>${roleBadge(m.role)}</td>
         <td class="right"><b>${U.money(s.sales || 0)}</b></td>
         <td class="right">${s.tickets || 0}</td>
@@ -199,12 +198,19 @@
         <div class="seg">${RANGES.map(([k, l]) => `<button data-range="${k}" class="${range === k ? 'on' : ''}">${l}</button>`).join('')}</div>
         <div class="row-flex"><button class="btn primary" data-a="code">🔑 Generar código</button><button class="btn ghost" data-a="new">➕ Crear usuario</button></div>
       </div>
-      <div class="card"><h3>🧑‍🍳 Equipo de ${U.esc(S.branchName())} <span class="badge">${people.length}</span></h3>${perfTable(people, stats)}${help}</div>
+      <div class="card"><h3>🧑‍🍳 Equipo de ${U.esc(S.branchName())} <span class="badge">${people.length}</span></h3><div class="perf">${perfTable(people, stats)}</div>${help}</div>
       <div class="card mt"><h3>🔑 Códigos de esta sucursal</h3><div class="inv-list"><div class="empty small">Cargando…</div></div></div>`;
     el.querySelectorAll('[data-range]').forEach((b) => b.onclick = () => { range = b.dataset.range; branchView(el); });
     el.querySelector('[data-a=code]').onclick = () => PZ.invites.create(bid, null, () => branchView(el));
     el.querySelector('[data-a=new]').onclick = () => editUser(null, () => branchView(el), { fixedBranch: bid });
-    el.querySelectorAll('[data-e]').forEach((b) => b.onclick = () => editUser(S.ctx.members.find((m) => m.user_id === b.dataset.e), () => branchView(el)));
+    const bindEdit = () => el.querySelectorAll('[data-e]').forEach((b) => b.onclick = () => editUser(S.ctx.members.find((m) => m.user_id === b.dataset.e), () => branchView(el)));
+    bindEdit();
+    PZ.cloud.profiles(people.map((m) => m.user_id)).then((profs) => {
+      const box = el.querySelector('.perf');
+      if (!box) return;
+      box.innerHTML = perfTable(people, stats, profs);
+      bindEdit();
+    }).catch(() => {});
     PZ.invites.renderList(el.querySelector('.inv-list'), () => branchView(el), { branchId: bid });
   }
 
@@ -258,8 +264,10 @@
     (fin.salaries || []).forEach((r) => { if (r.user_id) get(r.user_id).salary += Number(r.amount); });
     (fin.cash_closes || []).forEach((r) => { if (r.user_id) { const s = get(r.user_id); s.closes += Number(r.closes); s.absDiff += Number(r.abs_diff); s.diff += Number(r.diff); } });
     const people = S.ctx.members.filter((m) => !orgBranch || inBranch(m, orgBranch));
+    let profs = {};
+    try { profs = await PZ.cloud.profiles(people.map((m) => m.user_id)); } catch (e) { /* sin perfiles */ }
     box.innerHTML = `<div class="card"><h3>🧑‍🍳 ${orgBranch ? 'Equipo de ' + U.esc(S.branchName(orgBranch)) : 'Todo el equipo'} <span class="badge">${people.length}</span></h3>
-      ${perfTable(people, stats)}
+      ${perfTable(people, stats, profs)}
       <p class="small muted"><b>Sucursales:</b> ${people.map((m) => `${U.esc(m.name)} → ${U.esc(m.role === 'owner' ? 'Todas' : branchNames(m.branch_ids))}`).join(' · ')}</p>${help}</div>`;
     box.querySelectorAll('[data-e]').forEach((b) => b.onclick = () => editUser(S.ctx.members.find((m) => m.user_id === b.dataset.e), () => orgView(el)));
   }

@@ -5,4 +5,6 @@ window.PZ_CONFIG = {
   supabaseKey: 'sb_publishable_07jHXZFvDxLMZ3rictBG1w_xtNrNo00',
   // Los empleados ingresan con usuario; internamente es usuario@este-dominio
   staffDomain: 'staff.pizzeria.local',
+  // Versión de la app (aparece en el registro de errores)
+  version: '4.0.0',
 };

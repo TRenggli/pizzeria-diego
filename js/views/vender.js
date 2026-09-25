@@ -336,7 +336,11 @@
       const v = U.parseMoney(E.querySelector('.val').value);
       const t = cartTotals();
       const pct = type === '%' ? v : (v / Math.max(1, t.subtotal)) * 100;
-      if (pct > 20 && !(await PZ.auth.requireAdmin('Descuento mayor al 20%'))) return;
+      if (pct > 20) {
+        const auth = await PZ.auth.requireAdmin('Descuento mayor al 20%');
+        PZ.auth.release(auth);
+        if (!auth) return;
+      }
       cart.discount = v ? { type, value: v } : null;
       saveCart(); renderCart(el); m.close();
     };

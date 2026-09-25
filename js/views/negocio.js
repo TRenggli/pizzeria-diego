@@ -12,18 +12,7 @@
   let range = '7d';
   let reqId = 0;
 
-  function bounds() {
-    const t = U.startOfDay().getTime();
-    const now = new Date();
-    switch (range) {
-      case 'hoy': return [t, Date.now()];
-      case '7d': return [t - 6 * 864e5, Date.now()];
-      case '30d': return [t - 29 * 864e5, Date.now()];
-      case 'mes': return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), Date.now()];
-      case 'mesant': return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime() - 1];
-      default: return [t, Date.now()];
-    }
-  }
+  const bounds = () => U.rangeBounds(range);
   const rangeSeg = () => `<div class="seg">${RANGES.map(([k, l]) => `<button data-range="${k}" class="${range === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   const bindRange = (el, rerender) => el.querySelectorAll('[data-range]').forEach((b) => b.onclick = () => { range = b.dataset.range; rerender(); });
   const branches = () => S.ctx.branches.slice().sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name));

@@ -182,5 +182,37 @@
     };
   }
 
+  /* ---------------- Errores que tuvo la app en los equipos de los clientes ---------------- */
+  async function errores(el) {
+    el.innerHTML = '<div class="card empty"><span class="e-ico">🐞</span>Cargando…</div>';
+    let rows, orgs;
+    try { [rows, orgs] = await Promise.all([PZ.cloud.errors(300), PZ.cloud.platformOrgs()]); } catch (e) { el.innerHTML = `<div class="card empty">${U.esc(e.message)}</div>`; return; }
+    if (!el.isConnected) return;
+    const orgName = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
+    const groups = {};
+    rows.forEach((r) => {
+      const g = (groups[r.message] = groups[r.message] || { message: r.message, count: 0, last: r.at, rows: [] });
+      g.count++;
+      g.rows.push(r);
+    });
+    const list = Object.values(groups).sort((a, b) => new Date(b.last) - new Date(a.last));
+    const day = rows.filter((r) => Date.now() - new Date(r.at) < 864e5).length;
+    el.innerHTML = `
+      <div class="kpis mb">
+        <div class="kpi"><span class="k-ico">🐞</span><div class="k-label">Errores (últimos ${rows.length})</div><div class="k-value">${list.length} distintos</div></div>
+        <div class="kpi"><span class="k-ico">⏱️</span><div class="k-label">Últimas 24 horas</div><div class="k-value" style="color:${day ? 'var(--err)' : 'var(--ok)'}">${day}</div></div>
+      </div>
+      <div class="card">
+        ${list.length ? list.map((g) => {
+          const r = g.rows[0];
+          return `<details class="err-group"><summary><span class="badge ${g.count > 5 ? 'err' : 'warn'}">${g.count}×</span> <b>${U.esc(g.message)}</b><div class="small muted">Último: ${U.dateTime(g.last)} · v${U.esc(r.version || '?')} · ${U.esc(orgName[r.org_id] || 'sin negocio')}</div></summary>
+            ${g.rows.slice(0, 5).map((x) => `<div class="err-row small"><b>${U.dateTime(x.at)}</b> · ${U.esc(orgName[x.org_id] || '—')} · ${U.esc(x.context || '')}<br><span class="muted">${U.esc(x.url || '')}</span>${x.stack ? `<pre>${U.esc(x.stack)}</pre>` : ''}</div>`).join('')}
+          </details>`;
+        }).join('') : '<div class="empty"><span class="e-ico">😎</span>Sin errores registrados</div>'}
+      </div>
+      <p class="small muted">Se registran solos los errores que tiene la app en el celular o compu de cada cliente (no los cortes de internet). Sirve para enterarte de un problema antes de que te llamen.</p>`;
+  }
+
   PZ.views['p-negocios'] = { title: 'Negocios', render };
+  PZ.views['p-errores'] = { title: 'Errores de la app', render: errores };
 })(window.PZ);

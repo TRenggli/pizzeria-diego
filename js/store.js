@@ -70,6 +70,8 @@
   const statusListeners = new Set();
 
   const keyOf = (name, id) => `${name}:${id}`;
+  // Días de ventas que guarda cada equipo. Lo anterior se consulta a la nube.
+  const LOCAL_DAYS = 45;
   // Los registros por sucursal llevan la sucursal en el id remoto (así el
   // insumo "i-muz" existe una vez por sucursal con su propio stock).
   const remoteId = (name, id) => (COLS[name].scope === 'branch' && COLS[name].col ? `${S.ctx.branchId}/${id}` : id);
@@ -78,6 +80,9 @@
   const S = (PZ.store = {
     data: null,
     ctx: { orgId: null, branchId: null, org: null, branches: [], members: [], role: null },
+    LOCAL_DAYS,
+    /** Desde cuándo hay ventas guardadas en este equipo */
+    localSince: () => U.startOfDay(Date.now() - (LOCAL_DAYS - 1) * 864e5).getTime(),
     status: { pending: 0, state: 'idle', lastSync: null, error: '' },
 
     /* =================== Abrir sucursal =================== */
@@ -129,7 +134,7 @@
     /** Trae todo de la nube y lo combina con lo que falta enviar */
     async refresh() {
       const { orgId, branchId } = S.ctx;
-      const [meta, bd] = await Promise.all([PZ.cloud.orgMeta(orgId), PZ.cloud.branchData(orgId, branchId)]);
+      const [meta, bd] = await Promise.all([PZ.cloud.orgMeta(orgId), PZ.cloud.branchData(orgId, branchId, LOCAL_DAYS)]);
       S.ctx.org = meta.org;
       S.ctx.branches = meta.branches;
       S.ctx.members = meta.members;
@@ -284,7 +289,10 @@
         if (permanent) {
           S.status.state = 'error';
           S.status.error = e.message;
-          PZ.toast('No se pudo guardar un cambio en la nube: ' + (e.message || ''), 'err', 6000);
+          PZ.toast('La nube rechazó un cambio: ' + (e.message || ''), 'err', 7000);
+          PZ.cloud.reportError('Sync rechazado: ' + e.message, { context: e.code });
+          // volver a traer lo que dice el servidor para no quedar desalineados
+          setTimeout(() => S.refresh().then(() => S.emit()).catch(() => {}), 1500);
         } else {
           // devolver a la cola sin pisar cambios más nuevos
           batch.forEach((op, key) => {
@@ -561,17 +569,38 @@
       S.save();
     },
 
-    voidOrder(orderId, reason) {
+    /**
+     * Anula una venta. Lo hace el servidor (solo dueño o encargado), así
+     * nadie puede anular editando datos. `authClient` es la sesión del
+     * encargado que autorizó cuando quien opera es un cajero.
+     */
+    async voidOrder(orderId, reason, authClient = null) {
       const o = S.order(orderId);
-      if (!o || o.voided) return;
-      o.voided = true;
-      o.voidReason = reason || '';
-      o.voidedAt = Date.now();
-      o.voidedBy = PZ.auth.current ? PZ.auth.current.id : null;
-      o.status = 'cancelado';
+      if (!o || o.voided) return o;
+      if (!navigator.onLine) throw new Error('Para anular hace falta conexión a internet');
+      if (!String(reason || '').trim()) throw new Error('Indicá el motivo de la anulación');
+      S.diff();
+      await S.flush();
+      if (outbox.has(keyOf('orders', o.id))) throw new Error('La venta todavía no se sincronizó, probá en unos segundos');
+      const data = await PZ.cloud.voidOrder(S.ctx.orgId, o.id, reason, authClient);
+      replaceInPlace(o, { ...data, id: o.id });
+      shadow.set(keyOf('orders', o.id), JSON.stringify(o));
       S.applyStock(o, +1);
-      S.log('anulación', `Pedido #${o.number} anulado: ${reason || 'sin motivo'}`);
+      S.log('anulación', `Pedido #${o.number} anulado: ${reason}`);
       S.save();
+      return o;
+    },
+
+    /**
+     * Ventas de un período. Si el período es más viejo que lo guardado en el
+     * equipo, las trae de la nube (sin guardarlas localmente).
+     */
+    async ordersInRange(from, to) {
+      if (from >= S.localSince() || !navigator.onLine) return S.data.orders.filter((o) => o.createdAt >= from && o.createdAt <= to);
+      const remote = await PZ.cloud.ordersRange(S.ctx.branchId, from, to);
+      const byId = new Map(remote.map((o) => [o.id, o]));
+      S.data.orders.forEach((o) => { if (o.createdAt >= from && o.createdAt <= to) byId.set(o.id, o); });
+      return Array.from(byId.values()).sort((a, b) => a.createdAt - b.createdAt);
     },
 
     log(action, detail) {

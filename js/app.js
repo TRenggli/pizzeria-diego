@@ -46,12 +46,13 @@
     ],
     platform: [
       { id: 'p-negocios', label: 'Negocios', icon: '🛠️' },
+      { id: 'p-errores', label: 'Errores de la app', icon: '🐞' },
     ],
   };
   const BOTTOM = {
     branch: ['inicio', 'vender', 'pedidos', 'caja'],
     org: ['n-resumen', 'n-sucursales', 'n-finanzas', 'n-equipo'],
-    platform: ['p-negocios'],
+    platform: ['p-negocios', 'p-errores'],
   };
   const modeOf = (id) => (id.startsWith('p-') ? 'platform' : id.startsWith('n-') ? 'org' : 'branch');
 
@@ -142,7 +143,7 @@
     },
 
     /** Alta con código: el encargado o empleado se suma solo */
-    renderJoin() {
+    renderJoin(prefill = '') {
       root().innerHTML = `
         <div class="login"><div class="floaters">${App.floaters()}</div>
           <form class="login-card" novalidate>
@@ -172,7 +173,16 @@
         if (v.length > 4) v = v.slice(0, 4) + '-' + v.slice(4);
         f.code.value = v;
       });
-      form.querySelector('[data-a=back]').onclick = (e) => { e.preventDefault(); App.renderLogin(); };
+      form.querySelector('[data-a=back]').onclick = async (e) => {
+        e.preventDefault();
+        if (await PZ.cloud.session()) return App.enter().catch((x) => App.renderLogin(x.message));
+        App.renderLogin();
+      };
+      if (prefill) {
+        f.code.value = prefill;
+        f.code.dispatchEvent(new Event('input'));
+        setTimeout(() => form.requestSubmit(), 50);
+      }
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         err.classList.add('hidden');
@@ -267,6 +277,7 @@
       App.renderShell();
       App.go('p-negocios');
       App.route();
+      App.afterEnter();
     },
 
     /** Soporte: la plataforma entra al panel de un negocio */
@@ -285,6 +296,7 @@
       App.renderShell();
       if (modeOf((location.hash.replace(/^#\/?/, '') || 'x').split('/')[0]) !== 'org') history.replaceState(null, '', '#/n-resumen');
       App.route();
+      App.afterEnter();
     },
 
     async openBranch(branchId) {
@@ -302,6 +314,7 @@
       const cur = (location.hash.replace(/^#\/?/, '') || '').split('/')[0];
       if (!cur || modeOf(cur) !== 'branch') history.replaceState(null, '', '#/inicio');
       App.route();
+      App.afterEnter();
     },
 
     async leaveBranch() {
@@ -395,7 +408,7 @@
               <div class="spacer"></div>
               ${chips}
               <span class="clock"></span>
-              <button class="user-pill" data-a="user" aria-label="Mi usuario"><span class="avatar">${U.esc(name[0].toUpperCase())}</span><span class="u-name">${U.esc(name)}</span></button>
+              <button class="user-pill" data-a="user" aria-label="Mi usuario">${PZ.profile.avatar(PZ.profile.me, name, 32)}<span class="u-name">${U.esc(name)}</span></button>
               <svg class="drip" viewBox="0 0 1200 14" preserveAspectRatio="none" aria-hidden="true">
                 <path d="M0 0H1200V3H0Z"/>
                 <path class="d" d="M120 2 q8 0 8 7 q0 5 -8 5 q-8 0 -8 -5 q0 -7 8 -7z"/>
@@ -513,7 +526,7 @@
       if (mode === 'org') items.push('<button class="btn ghost block mt" data-a="operate">🍕 Operar en una sucursal</button>');
       if (A.platform && mode !== 'platform') items.push('<button class="btn ghost block mt" data-a="platform">🛠️ Volver a la plataforma</button>');
       if (!A.platform && A.memberships.length > 1) items.push('<button class="btn ghost block mt" data-a="org">🔀 Cambiar de negocio</button>');
-      if (!(u && u.support)) items.push('<button class="btn ghost block mt" data-a="pass">🔑 Cambiar mi contraseña</button>');
+      if (!(u && u.support)) items.unshift('<button class="btn primary block mt" data-a="profile">👤 Mi perfil (foto, datos, correo y contraseña)</button>');
       const m = PZ.modal({
         title: `Hola, ${U.esc(name)} 👋`,
         size: 'sm',
@@ -531,11 +544,22 @@
       on('operate', () => App.branchPicker());
       on('platform', App.openPlatform);
       on('org', () => { localStorage.removeItem('pz-org'); App.enter().catch((e) => App.renderLogin(e.message)); });
-      on('pass', async () => {
-        const p = await PZ.prompt('Nueva contraseña (mínimo 8 caracteres)', { type: 'password', title: 'Cambiar contraseña' });
-        if (p == null) return;
-        if (p.length < 8) return PZ.toast('La contraseña es muy corta', 'warn');
-        try { await PZ.cloud.updateMyPassword(p); PZ.toast('Contraseña actualizada'); } catch (e) { PZ.toast(e.message, 'err'); }
+      on('profile', () => PZ.profile.open());
+    },
+
+    /** Foto de la barra superior */
+    refreshAvatar() {
+      const pill = root().querySelector('.user-pill');
+      if (!pill) return;
+      const nameEl = pill.querySelector('.u-name');
+      const old = pill.querySelector('.avatar');
+      if (old) old.outerHTML = PZ.profile.avatar(PZ.profile.me, nameEl ? nameEl.textContent : '', 32);
+    },
+
+    afterEnter() {
+      PZ.profile.load().then(() => {
+        App.refreshAvatar();
+        PZ.profile.ensureComplete();
       });
     },
 
@@ -619,6 +643,12 @@
 
     const bootEl = document.getElementById('boot');
     const hideBoot = () => { bootEl.style.opacity = '0'; setTimeout(() => bootEl.remove(), 400); };
+    const invite = new URLSearchParams(location.search).get('codigo');
+    if (invite) {
+      history.replaceState(null, '', location.pathname);
+      hideBoot();
+      return App.renderJoin(invite);
+    }
     try {
       const session = await PZ.cloud.session();
       if (!session) { hideBoot(); return App.renderLogin(); }

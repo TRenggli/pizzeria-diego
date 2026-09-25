@@ -7,31 +7,30 @@
   let range = '7d';
   let custom = { from: '', to: '' };
 
-  function bounds() {
-    const today = U.startOfDay();
-    const t = today.getTime();
-    switch (range) {
-      case 'hoy': return [t, Date.now()];
-      case 'ayer': return [t - 864e5, t - 1];
-      case '7d': return [t - 6 * 864e5, Date.now()];
-      case '30d': return [t - 29 * 864e5, Date.now()];
-      case 'mes': return [new Date(today.getFullYear(), today.getMonth(), 1).getTime(), Date.now()];
-      case 'mesant': return [new Date(today.getFullYear(), today.getMonth() - 1, 1).getTime(), new Date(today.getFullYear(), today.getMonth(), 1).getTime() - 1];
-      case 'custom': return [custom.from ? new Date(custom.from + 'T00:00').getTime() : t, custom.to ? new Date(custom.to + 'T23:59:59').getTime() : Date.now()];
-      default: return [t, Date.now()];
-    }
+  const bounds = () => U.rangeBounds(range, custom);
+  let reqId = 0;
+
+  /** Trae las ventas del período (y del anterior, para comparar) y dibuja */
+  async function render(el) {
+    const my = ++reqId;
+    const [from, to] = bounds();
+    if (from - (to - from) < S.localSince() && navigator.onLine) el.innerHTML = '<div class="card empty"><span class="e-ico">☁️</span>Trayendo ventas anteriores de la nube…</div>';
+    let all;
+    try { all = await S.ordersInRange(from - (to - from) - 864e5, to); } catch (e) { el.innerHTML = `<div class="card empty">No se pudieron traer las ventas: ${U.esc(e.message)}</div>`; return; }
+    if (my !== reqId || !el.isConnected) return;
+    draw(el, all);
   }
 
-  function render(el) {
+  function draw(el, all) {
     const L = PZ.labels;
     const C = PZ.charts;
     const [from, to] = bounds();
-    const inRange = S.data.orders.filter((o) => o.paid && o.paidAt >= from && o.paidAt <= to);
+    const inRange = all.filter((o) => o.paid && o.paidAt >= from && o.paidAt <= to);
     const orders = inRange.filter((o) => !o.voided);
     const voided = inRange.filter((o) => o.voided);
     const sales = orders.reduce((a, o) => a + o.total, 0);
     const len = to - from;
-    const prev = S.data.orders.filter((o) => o.paid && !o.voided && o.paidAt >= from - len && o.paidAt < from).reduce((a, o) => a + o.total, 0);
+    const prev = all.filter((o) => o.paid && !o.voided && o.paidAt >= from - len && o.paidAt < from).reduce((a, o) => a + o.total, 0);
     const delta = prev ? Math.round(((sales - prev) / prev) * 100) : null;
 
     // Por día
