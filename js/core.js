@@ -1,0 +1,230 @@
+/* ==========================================================================
+   PZ core — utilidades compartidas (formato, DOM, modales, toasts)
+   ========================================================================== */
+window.PZ = window.PZ || {};
+window.PZ.views = window.PZ.views || {};
+
+(function (PZ) {
+  const moneyFmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 });
+  const numFmt = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 2 });
+
+  PZ.util = {
+    $: (sel, root = document) => root.querySelector(sel),
+    $$: (sel, root = document) => Array.from(root.querySelectorAll(sel)),
+
+    uid: (p = '') => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+
+    money: (n) => moneyFmt.format(Math.round(Number(n) || 0)),
+    num: (n) => numFmt.format(Number(n) || 0),
+
+    esc: (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+
+    date: (d) => new Date(d).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+    time: (d) => new Date(d).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }),
+    dateTime: (d) => PZ.util.date(d) + ' ' + PZ.util.time(d),
+
+    dayKey: (d) => {
+      const x = new Date(d);
+      return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+    },
+    startOfDay: (d = new Date()) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; },
+
+    minutesSince: (d) => Math.floor((Date.now() - new Date(d).getTime()) / 60000),
+
+    parseMoney: (v) => {
+      if (typeof v === 'number') return v;
+      const s = String(v || '').replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+      return Number(s) || 0;
+    },
+
+    stripAccents: (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''),
+
+    async sha256(text) {
+      if (window.crypto && crypto.subtle) {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+      }
+      // Fallback (contexto no seguro): hash simple, suficiente para demo local
+      let h = 5381;
+      for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+      return 'djb2-' + (h >>> 0).toString(16);
+    },
+
+    debounce(fn, ms = 250) {
+      let t;
+      return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+    },
+
+    readFileAsDataURL(file) {
+      return new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+    },
+
+    /** Reduce una imagen a un ancho máximo (para no llenar el almacenamiento) */
+    async shrinkImage(dataURL, maxW = 400) {
+      const img = await PZ.util.loadImage(dataURL);
+      const scale = Math.min(1, maxW / img.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL('image/png');
+    },
+
+    loadImage(src) {
+      return new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res(img);
+        img.onerror = rej;
+        img.src = src;
+      });
+    },
+
+    download(filename, content, type = 'text/plain') {
+      const blob = content instanceof Blob ? content : new Blob([content], { type });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    },
+
+    qrSvg(text, cell = 4, margin = 2) {
+      if (!window.qrcode || !text) return '';
+      try {
+        qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+        const qr = qrcode(0, 'M');
+        qr.addData(text);
+        qr.make();
+        return qr.createSvgTag({ cellSize: cell, margin, scalable: true });
+      } catch (e) {
+        return '';
+      }
+    },
+
+    phoneForWa(phone) {
+      let p = String(phone || '').replace(/\D/g, '');
+      if (!p) return '';
+      if (p.startsWith('0')) p = p.slice(1);
+      if (!p.startsWith('54')) p = '549' + p;
+      return p;
+    },
+  };
+
+  /* ---------- Toasts ---------- */
+  PZ.toast = function (msg, type = 'ok', ms = 2600) {
+    let wrap = document.getElementById('toasts');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.id = 'toasts';
+      document.body.appendChild(wrap);
+    }
+    const icons = { ok: '🍕', warn: '🌶️', err: '🔥', info: '🧀' };
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + type;
+    el.innerHTML = `<span class="toast-ico">${icons[type] || '🍕'}</span><span>${PZ.util.esc(msg)}</span>`;
+    wrap.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 350);
+    }, ms);
+  };
+
+  /* ---------- Modales ---------- */
+  PZ.modal = function ({ title = '', body = '', footer = '', size = '', onOpen, onClose, dismissable = true } = {}) {
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `
+      <div class="modal ${size}" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <h3>${title}</h3>
+          ${dismissable ? '<button class="icon-btn modal-x" aria-label="Cerrar">✕</button>' : ''}
+        </div>
+        <div class="modal-body">${body}</div>
+        ${footer ? `<div class="modal-foot">${footer}</div>` : ''}
+      </div>`;
+    document.body.appendChild(back);
+    requestAnimationFrame(() => back.classList.add('show'));
+    const api = {
+      el: back.querySelector('.modal'),
+      close() {
+        back.classList.remove('show');
+        document.removeEventListener('keydown', onKey);
+        setTimeout(() => back.remove(), 250);
+        onClose && onClose();
+      },
+    };
+    const onKey = (e) => { if (e.key === 'Escape' && dismissable) api.close(); };
+    document.addEventListener('keydown', onKey);
+    if (dismissable) {
+      back.addEventListener('mousedown', (e) => { if (e.target === back) api.close(); });
+      back.querySelector('.modal-x').addEventListener('click', () => api.close());
+    }
+    onOpen && onOpen(api.el, api);
+    const first = api.el.querySelector('[autofocus]');
+    if (first) setTimeout(() => first.focus(), 60);
+    return api;
+  };
+
+  PZ.confirm = function (message, { title = 'Confirmar', ok = 'Sí, continuar', danger = false } = {}) {
+    return new Promise((resolve) => {
+      let done = false;
+      const m = PZ.modal({
+        title,
+        size: 'sm',
+        body: `<p class="confirm-msg">${message}</p>`,
+        footer: `<button class="btn ghost" data-a="no">Cancelar</button><button class="btn ${danger ? 'danger' : 'primary'}" data-a="yes">${ok}</button>`,
+        onClose: () => { if (!done) resolve(false); },
+      });
+      m.el.querySelector('[data-a=no]').onclick = () => { done = true; m.close(); resolve(false); };
+      m.el.querySelector('[data-a=yes]').onclick = () => { done = true; m.close(); resolve(true); };
+    });
+  };
+
+  PZ.prompt = function (label, { title = '', value = '', type = 'text', ok = 'Aceptar' } = {}) {
+    return new Promise((resolve) => {
+      let done = false;
+      const m = PZ.modal({
+        title: title || label,
+        size: 'sm',
+        body: `<label class="field"><span>${label}</span><input type="${type}" value="${PZ.util.esc(value)}" autofocus></label>`,
+        footer: `<button class="btn ghost" data-a="no">Cancelar</button><button class="btn primary" data-a="yes">${ok}</button>`,
+        onClose: () => { if (!done) resolve(null); },
+      });
+      const inp = m.el.querySelector('input');
+      const accept = () => { done = true; const v = inp.value; m.close(); resolve(v); };
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') accept(); });
+      m.el.querySelector('[data-a=no]').onclick = () => { done = true; m.close(); resolve(null); };
+      m.el.querySelector('[data-a=yes]').onclick = accept;
+    });
+  };
+
+  /* ---------- Confeti de pepperoni / albahaca al cobrar ---------- */
+  PZ.celebrate = function () {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const layer = document.createElement('div');
+    layer.className = 'confetti-layer';
+    const kinds = ['pep', 'basil', 'olive', 'cheese', 'tomato'];
+    for (let i = 0; i < 38; i++) {
+      const s = document.createElement('i');
+      s.className = 'cf cf-' + kinds[i % kinds.length];
+      s.style.left = Math.random() * 100 + 'vw';
+      s.style.setProperty('--dx', (Math.random() * 160 - 80) + 'px');
+      s.style.setProperty('--rot', (Math.random() * 720 - 360) + 'deg');
+      s.style.animationDelay = (Math.random() * 0.35) + 's';
+      s.style.animationDuration = (1.4 + Math.random() * 1.1) + 's';
+      layer.appendChild(s);
+    }
+    document.body.appendChild(layer);
+    setTimeout(() => layer.remove(), 3000);
+  };
+})(window.PZ);

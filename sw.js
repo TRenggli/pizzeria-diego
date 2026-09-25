@@ -1,0 +1,32 @@
+/* Service worker: la app funciona sin internet una vez cargada. */
+const CACHE = 'pizzeria-diego-v1';
+const ASSETS = [
+  './', './index.html', './manifest.webmanifest', './css/styles.css', './img/icon.svg', './vendor/qrcode.js',
+  './js/core.js', './js/store.js', './js/auth.js', './js/ticket.js', './js/charts.js', './js/app.js',
+  './js/views/inicio.js', './js/views/vender.js', './js/views/pedidos.js', './js/views/caja.js', './js/views/historial.js',
+  './js/views/clientes.js', './js/views/menu.js', './js/views/stock.js', './js/views/reportes.js', './js/views/config.js',
+];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+});
+
+// Red primero (para recibir actualizaciones), caché si no hay conexión
+self.addEventListener('fetch', (e) => {
+  if (e.request.method !== 'GET') return;
+  e.respondWith(
+    fetch(e.request, { cache: 'no-cache' })
+      .then((res) => {
+        if (res.ok && new URL(e.request.url).origin === location.origin) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html')))
+  );
+});

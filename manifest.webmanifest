@@ -1,0 +1,15 @@
+{
+  "name": "Pizzería Diego · Sistema",
+  "short_name": "Pizzería",
+  "description": "Ventas, tickets, pedidos, caja y reportes",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fff8ec",
+  "theme_color": "#d7263d",
+  "lang": "es-AR",
+  "icons": [
+    { "src": "img/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
