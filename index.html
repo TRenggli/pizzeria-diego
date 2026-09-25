@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Pizzería Diego · Sistema</title>
+  <title>Pizzería · Sistema</title>
   <meta name="description" content="Sistema de gestión para pizzería: ventas, tickets, pedidos, caja y reportes.">
   <meta name="theme-color" content="#d7263d">
   <link rel="manifest" href="manifest.webmanifest">
@@ -15,6 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/responsive.css">
 </head>
 <body>
   <div class="boot" id="boot">
@@ -23,7 +24,11 @@
   <div id="app"></div>
 
   <script src="vendor/qrcode.js"></script>
+  <script src="vendor/supabase.js"></script>
+  <script src="js/config.js"></script>
   <script src="js/core.js"></script>
+  <script src="js/cloud.js"></script>
+  <script src="js/seed.js"></script>
   <script src="js/store.js"></script>
   <script src="js/auth.js"></script>
   <script src="js/ticket.js"></script>
@@ -32,6 +37,7 @@
   <script src="js/views/vender.js"></script>
   <script src="js/views/pedidos.js"></script>
   <script src="js/views/caja.js"></script>
+  <script src="js/views/sucursales.js"></script>
   <script src="js/views/historial.js"></script>
   <script src="js/views/clientes.js"></script>
   <script src="js/views/menu.js"></script>

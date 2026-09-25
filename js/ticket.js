@@ -114,6 +114,7 @@
       ${logo}
       <div class="biz">${U.esc(b.name)}</div>
       ${b.slogan ? `<div class="slogan small">${U.esc(b.slogan)}</div>` : ''}
+      ${PZ.store.ctx.branches.length > 1 ? `<div class="c" style="font-weight:800;margin-top:.5mm">Sucursal ${U.esc(PZ.store.branchName())}</div>` : ''}
       <div class="c small" style="margin-top:1mm">
         ${U.esc(b.address)}${b.city ? ' · ' + U.esc(b.city) : ''}<br>
         ${b.phone ? 'Tel/WhatsApp: ' + U.esc(b.phone) : ''}
@@ -181,6 +182,7 @@
     return `
     <div class="paper ${Number(st.ticket.width) === 58 ? 'w58' : ''}">
       <div class="biz">${U.esc(st.business.name)}</div>
+      <div class="c">Sucursal ${U.esc(PZ.store.branchName())}</div>
       <div class="c" style="font-weight:800;margin-top:1mm">${s.closedAt ? 'CIERRE DE CAJA' : 'ARQUEO PARCIAL'}</div>
       <hr class="solid">
       <div class="row small"><span>Apertura</span><span>${U.dateTime(s.openedAt)}</span></div>
@@ -345,6 +347,7 @@
     if (t.showLogo) { const c = await logoCanvas(w58 ? 384 : 576); if (c) e.image(c).ln(); }
     e.bold(true).size(2, 2).ln(b.name.toUpperCase()).size(1, 1).bold(false);
     if (b.slogan) e.ln(b.slogan);
+    if (PZ.store.ctx.branches.length > 1) e.bold(true).ln('Sucursal ' + PZ.store.branchName()).bold(false);
     e.ln(`${b.address}${b.city ? ' - ' + b.city : ''}`);
     if (b.phone) e.ln('Tel/WhatsApp: ' + b.phone);
     if (b.cuit) e.ln('CUIT: ' + b.cuit + (b.taxCondition ? ' - ' + b.taxCondition : ''));

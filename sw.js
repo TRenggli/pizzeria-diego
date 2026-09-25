@@ -1,7 +1,7 @@
 /* Service worker: la app funciona sin internet una vez cargada. */
-const CACHE = 'pizzeria-diego-v1';
+const CACHE = 'pizzeria-v2';
 const ASSETS = [
-  './', './index.html', './manifest.webmanifest', './css/styles.css', './img/icon.svg', './vendor/qrcode.js',
+  './', './index.html', './manifest.webmanifest', './css/styles.css', './css/responsive.css', './img/icon.svg', './vendor/qrcode.js', './vendor/supabase.js', './js/config.js', './js/cloud.js', './js/seed.js', './js/views/sucursales.js',
   './js/core.js', './js/store.js', './js/auth.js', './js/ticket.js', './js/charts.js', './js/app.js',
   './js/views/inicio.js', './js/views/vender.js', './js/views/pedidos.js', './js/views/caja.js', './js/views/historial.js',
   './js/views/clientes.js', './js/views/menu.js', './js/views/stock.js', './js/views/reportes.js', './js/views/config.js',
@@ -18,10 +18,12 @@ self.addEventListener('activate', (e) => {
 // Red primero (para recibir actualizaciones), caché si no hay conexión
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // Solo archivos propios de la app: las llamadas a Supabase van directo
+  if (new URL(e.request.url).origin !== location.origin) return;
   e.respondWith(
     fetch(e.request, { cache: 'no-cache' })
       .then((res) => {
-        if (res.ok && new URL(e.request.url).origin === location.origin) {
+        if (res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy));
         }

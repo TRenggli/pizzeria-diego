@@ -41,7 +41,7 @@
       <div class="hero">
         <div class="hero-pizza">${PZ.brandLogo(240)}</div>
         <h1>${greeting()}, ${U.esc(u.name)} 🍕</h1>
-        <p>${new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })} · ${sess ? 'La caja está abierta' : 'La caja está cerrada'}</p>
+        <p>${new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })} · 🏪 ${U.esc(S.branchName())} · ${sess ? 'caja abierta' : 'caja cerrada'}</p>
         <div class="row-flex">
           ${PZ.auth.can('vender') ? '<a class="btn lg" href="#/vender">🍕 Nueva venta</a>' : ''}
           <a class="btn ghost" href="#/pedidos">🔥 Ver pedidos (${active.length})</a>

@@ -1,12 +1,12 @@
 /* ==========================================================================
-   PZ.auth — ingreso con usuario y contraseña, roles y permisos
+   PZ.auth — sesión (Supabase Auth), roles y permisos
    ========================================================================== */
 (function (PZ) {
   const U = PZ.util;
-  const SESSION_KEY = 'pz-session';
 
   const ROLES = {
-    admin: { label: 'Administrador', can: ['*'] },
+    owner: { label: 'Dueño/a', can: ['*'] },
+    admin: { label: 'Encargado/a', can: ['*'] },
     cajero: { label: 'Cajero/a', can: ['inicio', 'vender', 'pedidos', 'caja', 'clientes', 'historial', 'stock'] },
     cocina: { label: 'Cocina', can: ['pedidos'] },
     delivery: { label: 'Delivery', can: ['pedidos'] },
@@ -14,71 +14,82 @@
 
   const A = (PZ.auth = {
     ROLES,
-    current: null,
+    current: null,   // { id, name, username, role, branchIds, orgId }
+    memberships: [],
 
-    restore() {
-      const raw = sessionStorage.getItem(SESSION_KEY) || localStorage.getItem(SESSION_KEY);
-      if (!raw) return null;
-      try {
-        const s = JSON.parse(raw);
-        if (s.exp && s.exp < Date.now()) { A.logout(); return null; }
-        const u = PZ.store.user(s.userId);
-        if (u && u.active) A.current = u;
-      } catch (e) { /* sesión corrupta */ }
+    /** Con la membresía elegida arma el usuario actual */
+    use(member) {
+      A.current = {
+        id: member.user_id,
+        name: member.name,
+        username: member.username,
+        role: member.role,
+        branchIds: member.branch_ids || [],
+        orgId: member.org_id,
+      };
       return A.current;
     },
 
-    async login(username, password, remember) {
-      const lockUntil = Number(localStorage.getItem('pz-lock') || 0);
-      if (lockUntil > Date.now()) {
-        const s = Math.ceil((lockUntil - Date.now()) / 1000);
-        throw new Error(`Demasiados intentos. Esperá ${s} segundos.`);
+    async login(user, password) {
+      await PZ.cloud.signIn(user, password);
+      A.memberships = await PZ.cloud.memberships();
+      if (!A.memberships.length) {
+        await PZ.cloud.signOut();
+        throw new Error('Tu usuario no pertenece a ningún negocio activo. Hablá con el dueño.');
       }
-      const u = PZ.store.data.users.find((x) => x.username.toLowerCase() === String(username).trim().toLowerCase() && x.active);
-      const hash = await U.sha256(password);
-      if (!u || u.passHash !== hash) {
-        const fails = Number(localStorage.getItem('pz-fails') || 0) + 1;
-        localStorage.setItem('pz-fails', fails);
-        if (fails >= 5) {
-          localStorage.setItem('pz-lock', Date.now() + 60000);
-          localStorage.setItem('pz-fails', 0);
-        }
-        throw new Error('Usuario o contraseña incorrectos');
-      }
-      localStorage.setItem('pz-fails', 0);
-      A.current = u;
-      const sess = JSON.stringify({ userId: u.id, exp: Date.now() + (remember ? 30 : 1) * 864e5 });
-      if (remember) localStorage.setItem(SESSION_KEY, sess);
-      else sessionStorage.setItem(SESSION_KEY, sess);
-      u.lastLogin = Date.now();
-      PZ.store.log('ingreso', `${u.name} ingresó al sistema`);
-      PZ.store.save();
-      return u;
+      return A.memberships;
     },
 
-    logout() {
+    async logout() {
       A.current = null;
-      sessionStorage.removeItem(SESSION_KEY);
-      localStorage.removeItem(SESSION_KEY);
+      A.memberships = [];
+      await PZ.cloud.signOut();
     },
 
     can(section) {
       if (!A.current) return false;
+      if (section === 'sucursales') return A.isAdmin();
       const r = ROLES[A.current.role];
       return !!r && (r.can.includes('*') || r.can.includes(section));
     },
 
-    isAdmin: () => A.current && A.current.role === 'admin',
+    isAdmin: () => !!A.current && ['owner', 'admin'].includes(A.current.role),
+    isOwner: () => !!A.current && A.current.role === 'owner',
 
-    /** Pide la clave de un administrador (para anular, descuentos grandes, etc.) */
-    async requireAdmin(reason = 'Esta acción requiere autorización') {
-      if (A.isAdmin()) return true;
-      const pass = await PZ.prompt('Contraseña de un administrador', { title: reason, type: 'password', ok: 'Autorizar' });
-      if (pass == null) return false;
-      const hash = await U.sha256(pass);
-      const ok = PZ.store.data.users.some((u) => u.role === 'admin' && u.active && u.passHash === hash);
-      if (!ok) PZ.toast('Contraseña de administrador incorrecta', 'err');
-      return ok;
+    /**
+     * Para acciones sensibles (anular, cancelar, descuento grande) cuando el
+     * usuario no es encargado: pide usuario y clave de un encargado o dueño.
+     */
+    requireAdmin(reason = 'Esta acción requiere autorización') {
+      if (A.isAdmin()) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let done = false;
+        const m = PZ.modal({
+          title: '🔐 ' + U.esc(reason),
+          size: 'sm',
+          body: `<p class="muted" style="margin-top:0">Pedile a un encargado o al dueño que ingrese sus datos.</p>
+            <label class="field"><span>Usuario o email</span><input class="u" autocapitalize="off" autocomplete="off" autofocus></label>
+            <label class="field"><span>Contraseña</span><input class="p" type="password" autocomplete="off"></label>`,
+          footer: `<button class="btn ghost" data-a="x">Cancelar</button><button class="btn primary" data-a="ok">Autorizar</button>`,
+          onClose: () => { if (!done) resolve(false); },
+        });
+        const ok = m.el.querySelector('[data-a=ok]');
+        m.el.querySelector('[data-a=x]').onclick = () => m.close();
+        m.el.querySelector('.p').addEventListener('keydown', (e) => { if (e.key === 'Enter') ok.click(); });
+        ok.onclick = async () => {
+          if (!navigator.onLine) return PZ.toast('Para autorizar hace falta conexión', 'warn');
+          ok.disabled = true;
+          const list = await PZ.cloud.verifyOther(m.el.querySelector('.u').value, m.el.querySelector('.p').value);
+          ok.disabled = false;
+          const { orgId, branchId } = PZ.store.ctx;
+          const valid = (list || []).some((x) => x.org_id === orgId && x.active && (x.role === 'owner' || (x.role === 'admin' && (!x.branch_ids.length || x.branch_ids.includes(branchId)))));
+          if (!valid) return PZ.toast('Datos incorrectos o sin permiso de encargado', 'err');
+          done = true;
+          m.close();
+          PZ.store.log('autorización', `${reason} (autorizado por otro usuario)`);
+          resolve(true);
+        };
+      });
     },
   });
 })(window.PZ);

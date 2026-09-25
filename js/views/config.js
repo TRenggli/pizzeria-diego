@@ -171,17 +171,23 @@
     },
 
     usuarios(b, el) {
-      if (!PZ.auth.isAdmin()) { b.innerHTML = '<div class="card empty">Solo administradores</div>'; return; }
+      if (!PZ.auth.isAdmin()) { b.innerHTML = '<div class="card empty">Solo dueño o encargados</div>'; return; }
       const R = PZ.auth.ROLES;
+      const branchLabel = (ids) => (!ids || !ids.length ? 'Todas' : ids.map((id) => S.branchName(id) || '?').join(', '));
+      const order = { owner: 0, admin: 1, cajero: 2, cocina: 3, delivery: 4 };
+      const users = S.data.users.slice().sort((x, y) => order[x.role] - order[y.role] || x.name.localeCompare(y.name));
       b.innerHTML = `<div class="card">
-        <div class="table-wrap"><table class="tbl"><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Último ingreso</th><th>Estado</th><th></th></tr></thead><tbody>
-          ${S.data.users.map((u) => `<tr><td><b>${U.esc(u.name)}</b></td><td>${U.esc(u.username)}</td><td>${R[u.role].label}</td><td class="small muted">${u.lastLogin ? U.dateTime(u.lastLogin) : '-'}</td>
-            <td><span class="badge ${u.active ? 'ok' : 'err'}">${u.active ? 'Activo' : 'Inactivo'}</span></td><td class="actions"><button class="btn sm ghost" data-e="${u.id}">✏️</button></td></tr>`).join('')}
+        <div class="row-flex space-between mb"><h3 style="margin:0">👤 Equipo de ${U.esc(S.ctx.org ? S.ctx.org.name : '')}</h3><button class="btn primary" data-a="new">➕ Nuevo usuario</button></div>
+        <div class="table-wrap"><table class="tbl"><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Sucursales</th><th>Último ingreso</th><th>Estado</th><th></th></tr></thead><tbody>
+          ${users.map((u) => `<tr><td><b>${U.esc(u.name)}</b>${u.id === PZ.auth.current.id ? ' <span class="badge pri">vos</span>' : ''}</td><td class="small">${U.esc(u.username)}</td><td>${R[u.role].label}</td>
+            <td class="small">${u.role === 'owner' ? 'Todas' : U.esc(branchLabel(u.branchIds))}</td>
+            <td class="small muted">${u.lastLogin ? U.dateTime(u.lastLogin) : '-'}</td>
+            <td><span class="badge ${u.active ? 'ok' : 'err'}">${u.active ? 'Activo' : 'Inactivo'}</span></td>
+            <td class="actions">${u.role !== 'owner' && (PZ.auth.isOwner() || u.role !== 'admin') ? `<button class="btn sm ghost" data-e="${u.id}">✏️</button>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
-        <button class="btn primary mt" data-a="new">➕ Nuevo usuario</button>
         <div class="mt small muted">
-          <b>Permisos:</b> Administrador = todo · Cajero/a = vender, pedidos, caja, clientes, ventas y stock · Cocina y Delivery = solo el tablero de pedidos.<br>
-          Anular ventas, cancelar pedidos y descuentos mayores al 20% piden clave de administrador.
+          <b>Roles:</b> Dueño = todo, todas las sucursales · Encargado = todo en sus sucursales (menú, precios, usuarios, reportes) · Cajero/a = vender, pedidos, caja, clientes, ventas y stock · Cocina y Delivery = solo el tablero de pedidos.<br>
+          Los empleados ingresan con su <b>usuario</b> (sin email). Anular ventas, cancelar pedidos y descuentos de más del 20% piden los datos de un encargado.
         </div>
       </div>`;
       b.querySelector('[data-a=new]').onclick = () => editUser(null, () => render(el));
@@ -189,108 +195,128 @@
     },
 
     apariencia(b, el) {
-      const st = S.data.settings;
+      const theme = PZ.app.theme();
       b.innerHTML = `<div class="card"><h3>🍕 Elegí el sabor del sistema</h3>
-        <div class="theme-grid">${PZ.themes.map((t) => `<button class="theme-card ${st.theme === t.id ? 'on' : ''}" data-th="${t.id}"><div class="sw">${t.sw.map((c) => `<i style="background:${c}"></i>`).join('')}</div>${t.name}<div class="small muted">${t.desc}</div></button>`).join('')}</div>
-        <label class="check mt"><input type="checkbox" data-k="motion"> Animaciones activadas (desactivalas si el equipo es lento)</label>
+        <p class="muted small" style="margin-top:0">Se guarda en este equipo: la tablet de cocina puede usar un tema y la caja otro.</p>
+        <div class="theme-grid">${PZ.themes.map((t) => `<button class="theme-card ${theme === t.id ? 'on' : ''}" data-th="${t.id}"><div class="sw">${t.sw.map((c) => `<i style="background:${c}"></i>`).join('')}</div>${t.name}<div class="small muted">${t.desc}</div></button>`).join('')}</div>
+        <label class="check mt"><input type="checkbox" class="motion" ${localStorage.getItem('pz-motion') === 'off' ? '' : 'checked'}> Animaciones activadas (desactivalas si el equipo es lento)</label>
       </div>`;
-      bind(b, () => PZ.app.applyTheme());
       b.querySelectorAll('[data-th]').forEach((x) => x.onclick = () => { PZ.app.setTheme(x.dataset.th); render(el); });
+      b.querySelector('.motion').onchange = (e) => { localStorage.setItem('pz-motion', e.target.checked ? 'on' : 'off'); PZ.app.applyTheme(); };
     },
 
     sistema(b, el) {
       const d = S.data;
       const size = new Blob([JSON.stringify(d)]).size;
       b.innerHTML = `<div class="dash" style="margin-top:0">
-        <div class="card"><h3>🛟 Respaldo</h3>
-          <p class="muted" style="margin-top:0">Los datos se guardan en este dispositivo. Descargá un respaldo cada semana (o antes de cambiar de celular/tablet) y guardalo en Drive o mandalo por mail.</p>
-          <div class="row-flex">
-            <button class="btn primary" data-a="exp">⬇️ Descargar respaldo</button>
-            <label class="btn ghost">⬆️ Restaurar respaldo<input type="file" accept=".json,application/json" data-a="imp" hidden></label>
+        <div class="card"><h3>☁️ Tus datos están en la nube</h3>
+          <p class="muted" style="margin-top:0">Todo se guarda automáticamente en la base de datos (Supabase) y queda disponible en cualquier equipo donde ingreses. Además cada equipo guarda una copia para seguir funcionando si se corta internet.</p>
+          <div class="bank-box">
+            <div class="bk-row"><span>Sucursal</span><b>${U.esc(S.branchName())}</b></div>
+            <div class="bk-row"><span>Pedidos cargados en este equipo</span><b>${d.orders.length} (últimos 120 días)</b></div>
+            <div class="bk-row"><span>Clientes del negocio</span><b>${d.customers.length}</b></div>
+            <div class="bk-row"><span>Copia local</span><b>${(size / 1024).toFixed(0)} KB</b></div>
           </div>
-          <p class="small muted">Tamaño actual: ${(size / 1024).toFixed(0)} KB · ${d.orders.length} pedidos · ${d.customers.length} clientes</p>
+          <button class="btn ghost mt" data-a="exp">⬇️ Descargar copia extra (JSON)</button>
         </div>
-        <div class="card"><h3>🧹 Datos</h3>
-          ${d.demo ? '<p style="margin-top:0">Hay <b>ventas de demostración</b> cargadas. Borralas antes de empezar a usar el sistema en serio (se conservan el menú, clientes y configuración).</p><button class="btn accent" data-a="demo">🧹 Borrar ventas de demo</button>' : '<p class="muted" style="margin-top:0">No hay datos de demo.</p>'}
-          ${PZ.auth.isAdmin() ? '<hr style="border:0;border-top:1px dashed var(--line);margin:16px 0"><button class="btn danger" data-a="reset">⚠️ Borrar TODO y empezar de cero</button>' : ''}
+        <div class="card"><h3>🧹 Datos de demostración</h3>
+          ${d.demo
+            ? '<p style="margin-top:0">Esta sucursal tiene <b>ventas de demostración</b>. Borralas antes de empezar a usarla en serio (el menú, los clientes y la configuración se conservan).</p><button class="btn accent" data-a="demo">🧹 Borrar ventas de demo</button>'
+            : `<p class="muted" style="margin-top:0">No hay datos de demo en esta sucursal.</p>${PZ.auth.isAdmin() ? '<button class="btn ghost" data-a="load">🎬 Cargar 2 semanas de ventas de ejemplo</button>' : ''}`}
+          ${PZ.auth.isAdmin() && !d.categories.length ? '<button class="btn ghost mt" data-a="menu">📋 Cargar menú de ejemplo</button>' : ''}
         </div>
       </div>
       <div class="card mt"><h3>🕵️ Registro de actividad</h3>
         ${d.audit.length ? d.audit.slice(0, 40).map((a) => `<div class="list-row"><span class="small muted nowrap">${U.dateTime(a.at)}</span><span class="badge">${U.esc(a.action)}</span><span class="grow">${U.esc(a.detail)}</span><span class="small muted">${U.esc((S.user(a.userId) || {}).name || '')}</span></div>`).join('') : '<div class="empty small">Sin actividad</div>'}
       </div>`;
       b.querySelector('[data-a=exp]').onclick = () => {
-        U.download(`respaldo_pizzeria_${U.dayKey(Date.now())}.json`, JSON.stringify(d), 'application/json');
-        S.log('sistema', 'Respaldo descargado');
+        U.download(`respaldo_${U.stripAccents(S.branchName()).replace(/\W+/g, '_')}_${U.dayKey(Date.now())}.json`, S.exportBackup(), 'application/json');
+        S.log('sistema', 'Copia de respaldo descargada');
         S.save();
       };
-      b.querySelector('[data-a=imp]').onchange = async (e) => {
-        const f = e.target.files[0];
-        if (!f) return;
-        try {
-          const data = JSON.parse(await f.text());
-          if (!data.settings || !Array.isArray(data.orders)) throw new Error('El archivo no es un respaldo válido');
-          if (!(await PZ.confirm(`Esto reemplaza TODOS los datos actuales por el respaldo (${data.orders.length} pedidos). ¿Continuar?`, { danger: true, ok: 'Restaurar' }))) return;
-          await S.replaceAll(data);
-          PZ.toast('Respaldo restaurado');
-          setTimeout(() => location.reload(), 600);
-        } catch (ex) { PZ.toast(ex.message || 'Archivo inválido', 'err'); }
-      };
-      const demo = b.querySelector('[data-a=demo]');
-      if (demo) demo.onclick = async () => {
-        if (!(await PZ.confirm('¿Borrar todas las ventas, cajas y movimientos de demostración?', { danger: true, ok: 'Borrar' }))) return;
-        S.clearDemo();
-        PZ.toast('Listo, sistema limpio para arrancar 🍕');
+      const on = (a, fn) => { const x = b.querySelector(`[data-a=${a}]`); if (x) x.onclick = fn; };
+      on('demo', async () => {
+        if (!(await PZ.confirm('¿Borrar todas las ventas, cajas y movimientos de demostración de esta sucursal?', { danger: true, ok: 'Borrar' }))) return;
+        try { await S.clearDemo(); PZ.toast('Listo, sucursal limpia para arrancar 🍕'); } catch (e) { PZ.toast(e.message, 'err'); }
         render(el);
-      };
-      const reset = b.querySelector('[data-a=reset]');
-      if (reset) reset.onclick = async () => {
-        const w = await PZ.prompt('Escribí BORRAR para confirmar', { title: 'Borrar todo' });
-        if (w !== 'BORRAR') return;
-        const fresh = await S.seed();
-        fresh.orders = []; fresh.cashSessions = []; fresh.cashMoves = []; fresh.counters = { order: 1, ticket: 1 }; fresh.demo = false;
-        await S.replaceAll(fresh);
-        PZ.auth.logout();
-        location.reload();
-      };
+      });
+      on('load', async () => {
+        if (!(await PZ.confirm('Se van a cargar unas 350 ventas ficticias de las últimas 2 semanas en esta sucursal. Después las podés borrar. ¿Continuar?'))) return;
+        try { PZ.toast('Horneando ventas de ejemplo…', 'info'); const n = await PZ.seed.demoHistory(14); PZ.toast(`${n} ventas de demo cargadas`); } catch (e) { PZ.toast(e.message, 'err'); }
+        render(el);
+      });
+      on('menu', () => { S.seedIfEmpty({ customers: false }); PZ.toast('Menú de ejemplo cargado'); render(el); });
     },
   };
 
+  async function reloadMembers() {
+    const meta = await PZ.cloud.orgMeta(S.ctx.orgId);
+    S.ctx.members = meta.members;
+    S.ctx.branches = meta.branches;
+    S.afterLoad();
+  }
+
   function editUser(u, done) {
     const R = PZ.auth.ROLES;
+    const roles = Object.keys(R).filter((k) => k !== 'owner' && (k !== 'admin' || PZ.auth.isOwner()));
+    const all = !u || !u.branchIds.length;
+    const branches = PZ.app.allowedBranches();
     const m = PZ.modal({
       title: u ? '✏️ ' + U.esc(u.name) : '➕ Nuevo usuario',
       body: `
         <div class="grid-2">
           <label class="field"><span>Nombre</span><input name="name" value="${U.esc(u ? u.name : '')}" autofocus></label>
-          <label class="field"><span>Usuario (para ingresar)</span><input name="username" value="${U.esc(u ? u.username : '')}" autocapitalize="off"></label>
-          <label class="field"><span>Rol</span><select name="role">${Object.keys(R).map((k) => `<option value="${k}" ${u && u.role === k ? 'selected' : ''}>${R[k].label}</option>`).join('')}</select></label>
-          <label class="field"><span>${u ? 'Nueva contraseña (vacío = no cambiar)' : 'Contraseña'}</span><input name="pass" type="password" autocomplete="new-password"></label>
+          <label class="field"><span>Usuario para ingresar</span><input name="username" value="${U.esc(u ? u.username : '')}" autocapitalize="off" ${u ? 'disabled' : 'placeholder="ej: caja.centro"'}></label>
+          <label class="field"><span>Rol</span><select name="role">${roles.map((k) => `<option value="${k}" ${u && u.role === k ? 'selected' : ''}>${R[k].label}</option>`).join('')}</select></label>
+          <label class="field"><span>${u ? 'Nueva contraseña (vacío = no cambiar)' : 'Contraseña (mínimo 6)'}</span><input name="pass" type="password" autocomplete="new-password"></label>
         </div>
-        ${u ? `<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Usuario activo</label>` : ''}`,
-      footer: `<button class="btn ghost" data-a="x">Cancelar</button><button class="btn primary" data-a="ok">Guardar</button>`,
+        <div class="opt-section">Sucursales donde trabaja</div>
+        <label class="check"><input type="checkbox" name="all" ${all ? 'checked' : ''} ${PZ.auth.isOwner() ? '' : 'disabled'}> Todas las sucursales${PZ.auth.isOwner() ? '' : ' (solo el dueño)'}</label>
+        <div class="branch-checks ${all && PZ.auth.isOwner() ? 'hidden' : ''}">${branches.map((b) => `<label class="check"><input type="checkbox" name="br" value="${b.id}" ${u && u.branchIds.includes(b.id) ? 'checked' : !u && b.id === S.ctx.branchId ? 'checked' : ''}> ${U.esc(b.name)}</label>`).join('')}</div>
+        ${u ? `<label class="check mt"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Usuario activo (si lo desactivás no puede ingresar)</label>` : ''}`,
+      footer: `${u ? '<button class="btn danger" data-a="del">Quitar</button><span class="grow"></span>' : ''}<button class="btn ghost" data-a="x">Cancelar</button><button class="btn primary" data-a="ok">Guardar</button>`,
     });
     const E = m.el;
     const v = (n) => E.querySelector(`[name=${n}]`).value.trim();
+    const allBox = E.querySelector('[name=all]');
+    allBox.onchange = () => E.querySelector('.branch-checks').classList.toggle('hidden', allBox.checked);
     E.querySelector('[data-a=x]').onclick = () => m.close();
+    const del = E.querySelector('[data-a=del]');
+    if (del) del.onclick = async () => {
+      if (!(await PZ.confirm(`¿Quitar a ${U.esc(u.name)} del negocio? No va a poder ingresar más. Sus ventas se conservan.`, { danger: true, ok: 'Quitar' }))) return;
+      try { await PZ.cloud.staff('delete', { user_id: u.id }); await reloadMembers(); m.close(); PZ.toast('Usuario quitado'); done(); } catch (e) { PZ.toast(e.message, 'err'); }
+    };
     E.querySelector('[data-a=ok]').onclick = async () => {
-      const username = v('username').toLowerCase();
-      if (!v('name') || !username) return PZ.toast('Completá nombre y usuario', 'warn');
-      if (S.data.users.some((x) => x.username.toLowerCase() === username && x !== u)) return PZ.toast('Ese usuario ya existe', 'warn');
-      const pass = E.querySelector('[name=pass]').value;
-      if (!u && pass.length < 6) return PZ.toast('La contraseña debe tener al menos 6 caracteres', 'warn');
-      if (u && pass && pass.length < 6) return PZ.toast('La contraseña debe tener al menos 6 caracteres', 'warn');
+      if (!navigator.onLine) return PZ.toast('Para gestionar usuarios hace falta conexión', 'warn');
+      const name = v('name');
       const role = v('role');
-      const active = u ? E.querySelector('[name=active]').checked : true;
-      const admins = S.data.users.filter((x) => x.role === 'admin' && x.active && x !== u).length;
-      if (u && u.role === 'admin' && (role !== 'admin' || !active) && !admins) return PZ.toast('Tiene que quedar al menos un administrador activo', 'warn');
-      if (u) {
-        Object.assign(u, { name: v('name'), username, role, active });
-        if (pass) u.passHash = await U.sha256(pass);
-      } else {
-        S.data.users.push({ id: U.uid('u-'), name: v('name'), username, role, active: true, passHash: await U.sha256(pass) });
+      const pass = E.querySelector('[name=pass]').value;
+      const branchIds = allBox.checked && PZ.auth.isOwner() ? [] : Array.from(E.querySelectorAll('[name=br]:checked')).map((x) => x.value);
+      if (!name) return PZ.toast('Falta el nombre', 'warn');
+      if (!(allBox.checked && PZ.auth.isOwner()) && !branchIds.length) return PZ.toast('Elegí al menos una sucursal', 'warn');
+      const btn = E.querySelector('[data-a=ok]');
+      btn.disabled = true;
+      try {
+        if (!u) {
+          if (pass.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres');
+          await PZ.cloud.staff('create', { name, username: v('username'), password: pass, role, branch_ids: branchIds });
+        } else {
+          const active = E.querySelector('[name=active]').checked;
+          const { error } = await PZ.cloud.sb.from('members').update({ name, role, branch_ids: branchIds, active }).eq('org_id', S.ctx.orgId).eq('user_id', u.id);
+          if (error) throw error;
+          if (pass) await PZ.cloud.staff('password', { user_id: u.id, password: pass });
+        }
+        await reloadMembers();
+        S.log('usuarios', `${u ? 'Edición' : 'Alta'} de ${name}`);
+        S.save();
+        m.close();
+        PZ.toast(u ? 'Usuario actualizado' : `Usuario creado. Ingresa con “${v('username').toLowerCase()}”`, 'ok', 4000);
+        done();
+      } catch (e) {
+        PZ.toast(e.message || 'No se pudo guardar', 'err', 5000);
+      } finally {
+        btn.disabled = false;
       }
-      S.log('usuarios', `${u ? 'Edición' : 'Alta'} de ${v('name')}`);
-      S.save(); m.close(); PZ.toast('Usuario guardado'); done();
     };
   }
 

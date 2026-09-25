@@ -230,7 +230,7 @@
       const w = window.open('', '_blank');
       if (!w) return PZ.toast('Permití las ventanas emergentes para imprimir', 'warn');
       const css = Array.from(document.styleSheets).map((s) => { try { return Array.from(s.cssRules).map((r) => r.cssText).join('\n'); } catch (e) { return ''; } }).join('\n');
-      w.document.write(`<!doctype html><html data-theme="${S.data.settings.theme}"><head><meta charset="utf-8"><title>Carta ${U.esc(b.name)}</title><style>${css} body{padding:24px;background:#fff} .card{box-shadow:none;border:0}</style></head><body><div class="card">${html}</div></body></html>`);
+      w.document.write(`<!doctype html><html data-theme="${PZ.app.theme()}"><head><meta charset="utf-8"><title>Carta ${U.esc(b.name)}</title><style>${css} body{padding:24px;background:#fff} .card{box-shadow:none;border:0}</style></head><body><div class="card">${html}</div></body></html>`);
       w.document.close();
       setTimeout(() => w.print(), 400);
     };

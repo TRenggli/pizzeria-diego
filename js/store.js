@@ -1,328 +1,427 @@
 /* ==========================================================================
-   PZ.store — capa de datos.
-   Todo vive en memoria y se persiste en IndexedDB (con fallback a
-   localStorage). Esta es la única pieza que hay que reemplazar para pasar
-   a un backend en la nube (Supabase, Firebase, API propia).
+   PZ.store — datos de la sucursal activa + sincronización con la nube.
+
+   Cómo funciona:
+   · Las pantallas leen y modifican S.data directamente y llaman S.save().
+   · save() compara cada registro con su última versión conocida ("shadow"),
+     arma parches solo con los campos que cambiaron y los pone en una cola
+     (outbox) que se guarda en el dispositivo.
+   · La cola se envía a Supabase apenas hay conexión. Si no hay internet,
+     el sistema sigue funcionando y sincroniza después.
+   · Los cambios de otros dispositivos llegan en tiempo real y se aplican
+     sobre los mismos objetos (respetando lo que todavía no se envió).
    ========================================================================== */
 (function (PZ) {
   const U = PZ.util;
-  const DB_NAME = 'pizzeria-diego';
-  const STORE = 'kv';
-  const KEY = 'data-v1';
-  const LS_KEY = 'pizzeria-diego-data-v1';
 
-  /* ---------- Persistencia (IndexedDB -> localStorage) ---------- */
+  /** Colecciones sincronizadas. scope org = compartidas entre sucursales. */
+  const COLS = {
+    categories: { col: 'category', scope: 'org', ordered: true },
+    products: { col: 'product', scope: 'org', ordered: true },
+    extras: { col: 'extra', scope: 'org', ordered: true },
+    customers: { col: 'customer', scope: 'org' },
+    ingredients: { col: 'ingredient', scope: 'branch', ordered: true },
+    stockMoves: { col: 'stock_move', scope: 'branch', appendOnly: true, sort: (a, b) => b.at - a.at },
+    cashSessions: { col: 'cash_session', scope: 'branch', sort: (a, b) => a.openedAt - b.openedAt },
+    cashMoves: { col: 'cash_move', scope: 'branch', sort: (a, b) => a.at - b.at },
+    audit: { col: 'audit', scope: 'branch', appendOnly: true, sort: (a, b) => b.at - a.at },
+    orders: { table: 'orders', scope: 'branch', appendOnly: true, sort: (a, b) => a.createdAt - b.createdAt },
+  };
+  const COL_TO_NAME = Object.fromEntries(Object.entries(COLS).filter(([, c]) => c.col).map(([n, c]) => [c.col, n]));
+
+  /* ---------------- Caché local (IndexedDB) ---------------- */
   const idb = {
     db: null,
-    open() {
-      return new Promise((res, rej) => {
-        if (!window.indexedDB) return rej(new Error('no-idb'));
-        const r = indexedDB.open(DB_NAME, 1);
-        r.onupgradeneeded = () => r.result.createObjectStore(STORE);
-        r.onsuccess = () => { this.db = r.result; res(); };
+    async open() {
+      if (this.db) return;
+      this.db = await new Promise((res, rej) => {
+        const r = indexedDB.open('pizzeria-cloud', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('kv');
+        r.onsuccess = () => res(r.result);
         r.onerror = () => rej(r.error);
       });
     },
     get(k) {
-      return new Promise((res, rej) => {
-        const t = this.db.transaction(STORE, 'readonly').objectStore(STORE).get(k);
+      return new Promise((res) => {
+        const t = this.db.transaction('kv', 'readonly').objectStore('kv').get(k);
         t.onsuccess = () => res(t.result);
-        t.onerror = () => rej(t.error);
+        t.onerror = () => res(null);
       });
     },
     set(k, v) {
-      return new Promise((res, rej) => {
-        const tx = this.db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).put(v, k);
+      return new Promise((res) => {
+        const tx = this.db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(v, k);
         tx.oncomplete = () => res();
-        tx.onerror = () => rej(tx.error);
+        tx.onerror = () => res();
       });
     },
   };
 
-  let useIdb = false;
-  let saveTimer = null;
+  let shadow = new Map();   // key → JSON del último estado conocido
+  let outbox = new Map();   // key → { name, id, patch } | { name, id, del: true } | { name: 'settings' }
+  let syncTimer = null;
+  let cacheTimer = null;
+  let flushing = false;
+  let retryDelay = 3000;
+  let retryTimer = null;
   const listeners = new Set();
+  const statusListeners = new Set();
+
+  const keyOf = (name, id) => `${name}:${id}`;
+  // Los registros por sucursal llevan la sucursal en el id remoto (así el
+  // insumo "i-muz" existe una vez por sucursal con su propio stock).
+  const remoteId = (name, id) => (COLS[name].scope === 'branch' && COLS[name].col ? `${S.ctx.branchId}/${id}` : id);
+  const localId = (id) => (id.includes('/') ? id.slice(id.indexOf('/') + 1) : id);
 
   const S = (PZ.store = {
     data: null,
+    ctx: { orgId: null, branchId: null, org: null, branches: [], members: [], role: null },
+    status: { pending: 0, state: 'idle', lastSync: null, error: '' },
 
-    async init() {
-      try { await idb.open(); useIdb = true; } catch (e) { useIdb = false; }
-      let raw = null;
-      if (useIdb) raw = await idb.get(KEY);
-      if (!raw) {
-        const ls = localStorage.getItem(LS_KEY);
-        if (ls) raw = JSON.parse(ls);
-      }
-      if (raw) {
-        S.data = S.migrate(raw);
-      } else {
-        S.data = await S.seed();
-        await S.flush();
-      }
-      if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    },
-
-    migrate(d) {
-      const base = S.defaults();
-      d.settings = deepMerge(base.settings, d.settings || {});
-      for (const k of Object.keys(base)) if (d[k] === undefined) d[k] = base[k];
-      return d;
-    },
-
-    save() {
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => S.flush(), 200);
-      listeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
-    },
-
-    async flush() {
-      clearTimeout(saveTimer);
-      try {
-        if (useIdb) await idb.set(KEY, S.data);
-        else localStorage.setItem(LS_KEY, JSON.stringify(S.data));
-      } catch (e) {
-        console.error(e);
-        PZ.toast('No se pudo guardar. Exportá un respaldo desde Configuración.', 'err', 6000);
-      }
-    },
-
-    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-
-    async replaceAll(newData) {
-      S.data = S.migrate(newData);
-      await S.flush();
-      S.save();
-    },
-
-    /* =================== Datos por defecto =================== */
-    defaults() {
+    /* =================== Abrir sucursal =================== */
+    emptyData(settings) {
       return {
-        version: 1,
-        settings: {
-          business: {
-            name: 'Pizzería Diego',
-            slogan: 'Pizza a la piedra, con amor',
-            address: 'Av. Siempre Viva 742',
-            city: 'Buenos Aires',
-            phone: '11 5555-1234',
-            whatsapp: '1155551234',
-            cuit: '',
-            taxCondition: 'Monotributista',
-            instagram: '@pizzeriadiego',
-          },
-          ticket: {
-            width: 80,
-            showLogo: true,
-            logo: null,
-            qrMode: 'instagram', // instagram | custom | none
-            qrText: '',
-            footer: '¡Gracias por elegirnos! Buen provecho',
-            legend: 'Comprobante no válido como factura',
-            pos: 1,
-            copies: 1,
-            autoPrint: true,
-            printKitchen: true,
-            printMode: 'browser', // browser | bluetooth | rawbt
-          },
-          payments: {
-            alias: 'PIZZERIA.DIEGO.MP',
-            cbu: '',
-            holder: 'Diego',
-            bank: 'Mercado Pago',
-            qrImage: null,
-            qrLink: '',
-            cashDiscountPct: 0,
-            cardSurchargePct: 0,
-            enableCard: true,
-          },
-          halfPricing: 'max', // max | avg
-          prepMinutes: 35,
-          zones: [
-            { id: 'z1', name: 'Zona 1 · hasta 10 cuadras', fee: 1500 },
-            { id: 'z2', name: 'Zona 2 · hasta 20 cuadras', fee: 2500 },
-            { id: 'z3', name: 'Zona 3 · más lejos', fee: 3500 },
-          ],
-          drivers: ['Carlos', 'Lucas'],
-          theme: 'margherita',
-          motion: true,
-        },
-        users: [],
-        categories: [],
-        products: [],
-        extras: [],
-        customers: [],
-        orders: [],
-        cashSessions: [],
-        cashMoves: [],
-        ingredients: [],
-        stockMoves: [],
-        counters: { order: 1, ticket: 1 },
-        audit: [],
+        settings: settings || PZ.seed.settings(),
+        users: [], categories: [], products: [], extras: [], customers: [], orders: [],
+        cashSessions: [], cashMoves: [], ingredients: [], stockMoves: [], audit: [],
         demo: false,
       };
     },
 
-    async seed() {
-      const d = S.defaults();
-      d.users = [
-        { id: 'u1', name: 'Diego', username: 'diego', passHash: await U.sha256('pizza123'), role: 'admin', active: true },
-        { id: 'u2', name: 'Caja', username: 'caja', passHash: await U.sha256('caja123'), role: 'cajero', active: true },
-        { id: 'u3', name: 'Cocina', username: 'cocina', passHash: await U.sha256('cocina123'), role: 'cocina', active: true },
-      ];
-      d.categories = [
-        { id: 'c-piz', name: 'Pizzas', icon: '🍕', allowHalf: true },
-        { id: 'c-esp', name: 'Especiales', icon: '⭐', allowHalf: true },
-        { id: 'c-emp', name: 'Empanadas', icon: '🥟', allowHalf: false },
-        { id: 'c-fai', name: 'Fainá y más', icon: '🥧', allowHalf: false },
-        { id: 'c-beb', name: 'Bebidas', icon: '🥤', allowHalf: false },
-        { id: 'c-pos', name: 'Postres', icon: '🍮', allowHalf: false },
-      ];
-      d.ingredients = [
-        { id: 'i-muz', name: 'Muzzarella', unit: 'kg', stock: 18, min: 5, cost: 9500 },
-        { id: 'i-har', name: 'Harina 000', unit: 'kg', stock: 40, min: 10, cost: 900 },
-        { id: 'i-sal', name: 'Salsa de tomate', unit: 'lt', stock: 12, min: 4, cost: 2200 },
-        { id: 'i-jam', name: 'Jamón cocido', unit: 'kg', stock: 4, min: 1.5, cost: 11000 },
-        { id: 'i-ceb', name: 'Cebolla', unit: 'kg', stock: 6, min: 2, cost: 1200 },
-        { id: 'i-cal', name: 'Longaniza calabresa', unit: 'kg', stock: 2.5, min: 1, cost: 13000 },
-        { id: 'i-ace', name: 'Aceitunas', unit: 'kg', stock: 1.2, min: 0.5, cost: 8000 },
-        { id: 'i-cru', name: 'Jamón crudo', unit: 'kg', stock: 0.8, min: 1, cost: 26000 },
-        { id: 'i-car', name: 'Cajas de pizza', unit: 'u', stock: 180, min: 60, cost: 450 },
-        { id: 'i-gar', name: 'Garbanzos (fainá)', unit: 'kg', stock: 5, min: 1.5, cost: 2800 },
-      ];
-      const pz = (name, desc, chica, grande, recipe, color) => ({
-        id: U.uid('p-'), categoryId: 'c-piz', name, desc, active: true, color,
-        variants: [
-          { id: 'grande', name: 'Grande', price: grande, factor: 1 },
-          { id: 'chica', name: 'Chica', price: chica, factor: 0.6 },
-        ],
-        recipe,
-      });
-      const base = [{ ingredientId: 'i-muz', qty: 0.35 }, { ingredientId: 'i-har', qty: 0.3 }, { ingredientId: 'i-sal', qty: 0.15 }, { ingredientId: 'i-car', qty: 1 }];
-      const withX = (extra) => base.concat(extra);
-      d.products = [
-        pz('Muzzarella', 'Salsa, muzzarella, orégano y aceitunas', 9500, 13500, withX([{ ingredientId: 'i-ace', qty: 0.02 }]), '#f4d35e'),
-        pz('Napolitana', 'Muzza, rodajas de tomate, ajo y perejil', 10500, 15000, base, '#e63946'),
-        pz('Fugazzeta', 'Rellena de muzza con cebolla y orégano', 11000, 15800, withX([{ ingredientId: 'i-ceb', qty: 0.25 }, { ingredientId: 'i-muz', qty: 0.15 }]), '#e9c46a'),
-        pz('Calabresa', 'Muzza con longaniza calabresa', 11000, 16000, withX([{ ingredientId: 'i-cal', qty: 0.12 }]), '#b3261e'),
-        pz('Especial', 'Muzza, jamón, morrones y huevo', 11500, 16500, withX([{ ingredientId: 'i-jam', qty: 0.12 }]), '#f4a261'),
-        pz('Jamón y morrones', 'Muzza, jamón cocido y morrones asados', 11000, 16000, withX([{ ingredientId: 'i-jam', qty: 0.12 }]), '#d62828'),
-        pz('Cuatro quesos', 'Muzza, roquefort, provolone y parmesano', 12500, 17800, withX([{ ingredientId: 'i-muz', qty: 0.1 }]), '#ffe08a'),
-        pz('Rúcula y crudo', 'Muzza, rúcula fresca, jamón crudo y parmesano', 13500, 19000, withX([{ ingredientId: 'i-cru', qty: 0.1 }]), '#52b788'),
-      ];
-      const one = (categoryId, name, desc, price, extra = {}) => ({
-        id: U.uid('p-'), categoryId, name, desc, active: true,
-        variants: [{ id: 'u', name: 'Unidad', price, factor: 1 }], recipe: [], ...extra,
-      });
-      d.products.push(
-        { ...pz('Provolone y tomate', 'Provolone gratinado, tomate y albahaca', 12500, 18000, base, '#e76f51'), categoryId: 'c-esp' },
-        { ...pz('Palmitos', 'Muzza, jamón, palmitos y salsa golf', 13000, 18500, base, '#90be6d'), categoryId: 'c-esp' },
-        { ...pz('Pizza Diego', 'La de la casa: muzza, panceta, cheddar y verdeo', 13500, 19500, base, '#ff8c42'), categoryId: 'c-esp' },
-        {
-          id: U.uid('p-'), categoryId: 'c-emp', name: 'Empanada de carne', desc: 'Cortada a cuchillo, al horno', active: true,
-          variants: [{ id: 'u', name: 'Unidad', price: 1500, factor: 1 }, { id: 'doc', name: 'Docena', price: 16000, factor: 12 }], recipe: [],
-        },
-        {
-          id: U.uid('p-'), categoryId: 'c-emp', name: 'Empanada jamón y queso', desc: 'Clásica', active: true,
-          variants: [{ id: 'u', name: 'Unidad', price: 1500, factor: 1 }, { id: 'doc', name: 'Docena', price: 16000, factor: 12 }], recipe: [],
-        },
-        {
-          id: U.uid('p-'), categoryId: 'c-emp', name: 'Empanada de humita', desc: 'Choclo cremoso', active: true,
-          variants: [{ id: 'u', name: 'Unidad', price: 1500, factor: 1 }, { id: 'doc', name: 'Docena', price: 16000, factor: 12 }], recipe: [],
-        },
-        one('c-fai', 'Fainá', 'Porción de fainá de garbanzos', 1800, { recipe: [{ ingredientId: 'i-gar', qty: 0.05 }] }),
-        one('c-fai', 'Fugazza', 'Sin queso, cebolla y orégano', 9000),
-        one('c-fai', 'Calzone', 'Jamón, muzza y tomate', 11500),
-        one('c-beb', 'Coca-Cola 1.5L', '', 4200),
-        one('c-beb', 'Sprite 1.5L', '', 4000),
-        one('c-beb', 'Agua 500ml', '', 1800),
-        one('c-beb', 'Cerveza Quilmes 1L', '', 4500),
-        one('c-beb', 'Cerveza artesanal IPA', 'Pinta', 5000),
-        one('c-pos', 'Flan casero', 'Con dulce de leche', 4000),
-        one('c-pos', 'Helado 1/4 kg', '', 6000),
-      );
-      d.extras = [
-        { id: 'e1', name: 'Extra muzzarella', price: 2500 },
-        { id: 'e2', name: 'Huevo', price: 1000 },
-        { id: 'e3', name: 'Aceitunas extra', price: 800 },
-        { id: 'e4', name: 'Morrones', price: 1500 },
-        { id: 'e5', name: 'Borde relleno', price: 3000 },
-        { id: 'e6', name: 'Sin sal / sin orégano', price: 0 },
-      ];
-      d.customers = [
-        { id: 'cl1', name: 'María González', phone: '11 4455-6677', address: 'Mitre 1234, 2°B', zoneId: 'z1', notes: 'Timbre no anda, llamar', createdAt: Date.now() - 40 * 864e5 },
-        { id: 'cl2', name: 'Juan Pérez', phone: '11 3322-1100', address: 'Belgrano 560', zoneId: 'z2', notes: '', createdAt: Date.now() - 30 * 864e5 },
-        { id: 'cl3', name: 'Lucía Fernández', phone: '11 6789-0123', address: 'San Martín 88', zoneId: 'z1', notes: 'Siempre pide fugazzeta', createdAt: Date.now() - 20 * 864e5 },
-        { id: 'cl4', name: 'Club El Fortín', phone: '11 2233-4455', address: 'Rivadavia 3000', zoneId: 'z3', notes: 'Pedidos grandes los viernes', createdAt: Date.now() - 12 * 864e5 },
-      ];
-      S.data = d;
-      S.seedDemoHistory(d);
-      return d;
+    /**
+     * Carga la sucursal: primero desde la caché (instantáneo y sirve sin
+     * internet) y después trae lo último de la nube.
+     */
+    async open(orgId, branchId) {
+      await idb.open();
+      S.ctx.orgId = orgId;
+      S.ctx.branchId = branchId;
+      shadow = new Map();
+      outbox = new Map();
+      const cached = await idb.get(`branch:${branchId}`);
+      if (cached && cached.data) {
+        S.data = cached.data;
+        S.ctx.org = cached.org || S.ctx.org;
+        S.ctx.branches = cached.branches || S.ctx.branches;
+        S.ctx.members = cached.members || S.ctx.members;
+        outbox = new Map(cached.outbox || []);
+        S.rebuildShadow();
+        S.afterLoad();
+      }
+      if (navigator.onLine) {
+        try {
+          await S.refresh();
+        } catch (e) {
+          console.error(e);
+          if (!S.data) throw e;
+          PZ.toast('Trabajando sin conexión con los datos guardados', 'warn', 4000);
+        }
+      } else if (!S.data) {
+        throw new Error('Sin conexión y sin datos guardados en este dispositivo. Conectate a internet para el primer ingreso.');
+      }
+      PZ.cloud.subscribe(orgId, branchId, S.onRemote);
+      S.ensurePools();
+      S.flush();
     },
 
-    /** Genera 14 días de ventas ficticias para que la demo se vea viva */
-    seedDemoHistory(d) {
-      const pizzas = d.products.filter((p) => p.categoryId === 'c-piz' || p.categoryId === 'c-esp');
-      const others = d.products.filter((p) => !(p.categoryId === 'c-piz' || p.categoryId === 'c-esp'));
-      const methods = ['efectivo', 'efectivo', 'transferencia', 'transferencia', 'qr', 'qr', 'tarjeta'];
-      const types = ['mostrador', 'delivery', 'delivery', 'retiro', 'mesa'];
-      const rnd = (a) => a[Math.floor(Math.random() * a.length)];
-      const today = U.startOfDay();
-      for (let day = 14; day >= 1; day--) {
-        const dayStart = new Date(today.getTime() - day * 864e5);
-        const dow = dayStart.getDay();
-        const n = Math.round((dow === 5 || dow === 6 ? 34 : dow === 0 ? 28 : 18) * (0.8 + Math.random() * 0.4));
-        const session = {
-          id: U.uid('cs-'), openedAt: dayStart.getTime() + 18.5 * 36e5, openedBy: 'u1', openingAmount: 20000,
-          closedAt: null, closedBy: 'u1', countedCash: 0, expectedCash: 0, diff: 0, notes: '',
-        };
-        let cashIn = 0;
-        for (let i = 0; i < n; i++) {
-          const hour = Math.random() < 0.15 ? 12 + Math.random() * 2 : 19.5 + Math.random() * 4;
-          const at = dayStart.getTime() + hour * 36e5;
-          const items = [];
-          const np = 1 + Math.floor(Math.random() * 2.4);
-          for (let k = 0; k < np; k++) {
-            const p = rnd(pizzas);
-            const v = Math.random() < 0.8 ? p.variants[0] : p.variants[1];
-            if (Math.random() < 0.18) {
-              const p2 = rnd(pizzas);
-              const v2 = p2.variants.find((x) => x.id === v.id) || p2.variants[0];
-              items.push(S.makeItem({ product: p, variant: v, half: { product: p2, variant: v2 }, qty: 1 }));
-            } else items.push(S.makeItem({ product: p, variant: v, qty: 1 }));
+    /** Trae todo de la nube y lo combina con lo que falta enviar */
+    async refresh() {
+      const { orgId, branchId } = S.ctx;
+      const [meta, bd] = await Promise.all([PZ.cloud.orgMeta(orgId), PZ.cloud.branchData(orgId, branchId)]);
+      S.ctx.org = meta.org;
+      S.ctx.branches = meta.branches;
+      S.ctx.members = meta.members;
+
+      const d = S.emptyData();
+      const pendingSettings = outbox.get('settings');
+      d.settings = pendingSettings && S.data ? S.data.settings : deepMerge(PZ.seed.settings(meta.org ? meta.org.name : ''), bd.branch.settings || {});
+
+      const grouped = {};
+      bd.docs.forEach((r) => {
+        const name = COL_TO_NAME[r.col];
+        if (!name) return;
+        if (COLS[name].scope === 'branch' && r.branch_id !== branchId) return;
+        (grouped[name] = grouped[name] || []).push({ ...r.data, id: localId(r.id) });
+      });
+      grouped.orders = bd.orders.map((r) => ({ ...r.data, id: r.id }));
+
+      for (const name of Object.keys(COLS)) {
+        const remote = grouped[name] || [];
+        const byId = new Map(remote.map((r) => [r.id, r]));
+        // aplicar lo pendiente de envío
+        outbox.forEach((op) => {
+          if (op.name !== name) return;
+          if (op.del) byId.delete(op.id);
+          else if (byId.has(op.id)) byId.set(op.id, { ...byId.get(op.id), ...op.patch });
+          else {
+            const local = S.data && (S.data[name] || []).find((x) => x.id === op.id);
+            byId.set(op.id, local ? { ...local, ...op.patch } : { ...op.patch, id: op.id });
           }
-          if (Math.random() < 0.6) { const o = rnd(others); items.push(S.makeItem({ product: o, variant: o.variants[0], qty: 1 + Math.floor(Math.random() * 2) })); }
-          const type = rnd(types);
-          const zone = type === 'delivery' ? rnd(d.settings.zones) : null;
-          const cust = type === 'delivery' || Math.random() < 0.3 ? rnd(d.customers) : null;
-          const subtotal = items.reduce((a, it) => a + it.total, 0);
-          const total = subtotal + (zone ? zone.fee : 0);
-          const method = rnd(methods);
-          const tendered = method === 'efectivo' ? Math.ceil(total / 5000) * 5000 : total;
-          if (method === 'efectivo') cashIn += total;
-          const ticketN = d.counters.ticket++;
-          d.orders.push({
-            id: U.uid('o-'), number: d.counters.order++, ticketNumber: ticketN,
-            createdAt: at, paidAt: at + 60000, userId: 'u2', type,
-            table: type === 'mesa' ? String(1 + Math.floor(Math.random() * 12)) : '',
-            customerId: cust ? cust.id : null, customerName: cust ? cust.name : '', phone: cust ? cust.phone : '', address: cust && type === 'delivery' ? cust.address : '',
-            zoneId: zone ? zone.id : null, items, subtotal, discountAmount: 0, discount: null, surcharge: 0,
-            deliveryFee: zone ? zone.fee : 0, total,
-            payments: [{ method, amount: total, tendered, change: tendered - total, ref: '' }],
-            paid: true, status: 'entregado', statusTimes: { pendiente: at, entregado: at + 40 * 60000 },
-            driver: type === 'delivery' ? rnd(d.settings.drivers) : '', cashSessionId: session.id, notes: '', voided: false,
-          });
-        }
-        session.closedAt = dayStart.getTime() + 24 * 36e5 - 60000;
-        session.expectedCash = session.openingAmount + cashIn - 5000;
-        const diff = Math.random() < 0.7 ? 0 : Math.round((Math.random() * 2000 - 1000) / 100) * 100;
-        session.countedCash = session.expectedCash + diff;
-        session.diff = diff;
-        d.cashSessions.push(session);
-        d.cashMoves.push({ id: U.uid('cm-'), sessionId: session.id, type: 'egreso', amount: 5000, reason: 'Compra de verdura', at: session.openedAt + 36e5, userId: 'u1' });
+        });
+        d[name] = sortCol(name, Array.from(byId.values()));
       }
-      d.demo = true;
+      S.data = d;
+      S.rebuildShadow();
+      S.afterLoad();
+      S.status.lastSync = Date.now();
+      S.cache();
+      S.emit();
+    },
+
+    afterLoad() {
+      const d = S.data;
+      d.users = S.ctx.members.map((m) => ({ id: m.user_id, name: m.name, username: m.username, role: m.role, active: m.active, branchIds: m.branch_ids || [], lastLogin: m.last_login }));
+      d.demo = d.orders.some((o) => o.demo);
+      d.settings.business = d.settings.business || {};
+    },
+
+    rebuildShadow() {
+      shadow = new Map();
+      for (const name of Object.keys(COLS)) {
+        // lo que falta enviar ya está en la cola: el shadow es el estado local
+        (S.data[name] || []).forEach((r, i) => {
+          if (COLS[name].ordered) r._i = i;
+          shadow.set(keyOf(name, r.id), JSON.stringify(r));
+        });
+      }
+      shadow.set('settings', JSON.stringify(S.data.settings));
+    },
+
+    /* =================== Guardar =================== */
+    save() {
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => { S.diff(); S.flush(); }, 250);
+      listeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
+    },
+
+    onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    onStatus(fn) { statusListeners.add(fn); return () => statusListeners.delete(fn); },
+    emit() { listeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } }); },
+    emitStatus() {
+      S.status.pending = outbox.size;
+      S.status.online = navigator.onLine;
+      statusListeners.forEach((fn) => { try { fn(S.status); } catch (e) { console.error(e); } });
+    },
+
+    /** Detecta qué cambió y lo agrega a la cola */
+    diff() {
+      if (!S.data) return;
+      for (const [name, cfg] of Object.entries(COLS)) {
+        const arr = S.data[name] || [];
+        const seen = new Set();
+        arr.forEach((r, i) => {
+          if (!r.id) r.id = U.uid(cfg.col ? cfg.col.slice(0, 3) + '-' : 'o-');
+          if (cfg.ordered) r._i = i;
+          const key = keyOf(name, r.id);
+          seen.add(key);
+          const now = JSON.stringify(r);
+          const before = shadow.get(key);
+          if (before === now) return;
+          let patch;
+          if (!before) patch = JSON.parse(now);
+          else {
+            const old = JSON.parse(before);
+            patch = {};
+            Object.keys(r).forEach((k) => { if (JSON.stringify(r[k]) !== JSON.stringify(old[k])) patch[k] = r[k] === undefined ? null : r[k]; });
+            Object.keys(old).forEach((k) => { if (!(k in r)) patch[k] = null; });
+            patch = JSON.parse(JSON.stringify(patch));
+          }
+          queue(key, { name, id: r.id, patch });
+          shadow.set(key, now);
+        });
+        if (!cfg.appendOnly) {
+          for (const key of Array.from(shadow.keys())) {
+            if (key.startsWith(name + ':') && !seen.has(key)) {
+              queue(key, { name, id: key.slice(name.length + 1), del: true });
+              shadow.delete(key);
+            }
+          }
+        }
+      }
+      const st = JSON.stringify(S.data.settings);
+      if (shadow.get('settings') !== st) {
+        queue('settings', { name: 'settings' });
+        shadow.set('settings', st);
+      }
+      S.cache();
+      S.emitStatus();
+    },
+
+    /** Envía la cola a la nube */
+    async flush() {
+      if (flushing || !outbox.size || !navigator.onLine || !S.ctx.branchId) { S.emitStatus(); return; }
+      flushing = true;
+      S.status.state = 'syncing';
+      S.emitStatus();
+      const batch = outbox;
+      outbox = new Map();
+      const { orgId, branchId } = S.ctx;
+      const docs = [];
+      const orders = [];
+      const dels = [];
+      let settings = false;
+      batch.forEach((op) => {
+        if (op.name === 'settings') { settings = true; return; }
+        const cfg = COLS[op.name];
+        if (op.del) { if (cfg.col) dels.push(op); return; }
+        if (cfg.table === 'orders') orders.push({ org_id: orgId, id: op.id, branch_id: branchId, data: op.patch });
+        else docs.push({ org_id: orgId, col: cfg.col, id: remoteId(op.name, op.id), branch_id: cfg.scope === 'branch' ? branchId : '', data: op.patch });
+      });
+      try {
+        if (docs.length) await PZ.cloud.upsertDocs(docs);
+        if (orders.length) await PZ.cloud.upsertOrders(orders);
+        for (const op of dels) await PZ.cloud.deleteDoc(orgId, COLS[op.name].col, remoteId(op.name, op.id));
+        if (settings) await PZ.cloud.saveSettings(branchId, S.data.settings);
+        S.status.state = 'ok';
+        S.status.error = '';
+        S.status.lastSync = Date.now();
+        retryDelay = 3000;
+      } catch (e) {
+        console.error('sync', e);
+        const permanent = e && e.code && /^(42|23|22|P0)/.test(e.code);
+        if (permanent) {
+          S.status.state = 'error';
+          S.status.error = e.message;
+          PZ.toast('No se pudo guardar un cambio en la nube: ' + (e.message || ''), 'err', 6000);
+        } else {
+          // devolver a la cola sin pisar cambios más nuevos
+          batch.forEach((op, key) => {
+            const newer = outbox.get(key);
+            if (!newer) outbox.set(key, op);
+            else if (!newer.del && !op.del && newer.patch && op.patch) newer.patch = { ...op.patch, ...newer.patch };
+          });
+          S.status.state = 'retry';
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => S.flush(), retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 60000);
+        }
+      } finally {
+        flushing = false;
+        S.cache();
+        S.emitStatus();
+        if (outbox.size && S.status.state === 'ok') S.flush();
+      }
+    },
+
+    onOnline() {
+      retryDelay = 3000;
+      S.flush();
+      S.ensurePools();
+      S.emitStatus();
+    },
+
+    cache() {
+      clearTimeout(cacheTimer);
+      cacheTimer = setTimeout(() => {
+        if (!S.ctx.branchId || !S.data) return;
+        idb.set(`branch:${S.ctx.branchId}`, {
+          data: S.data, outbox: Array.from(outbox.entries()), savedAt: Date.now(),
+          org: S.ctx.org, branches: S.ctx.branches, members: S.ctx.members,
+        });
+      }, 400);
+    },
+
+    /* =================== Cambios que llegan de otros equipos =================== */
+    onRemote(table, p) {
+      if (!S.data) return;
+      const row = p.new && Object.keys(p.new).length ? p.new : null;
+      const old = p.old || {};
+      if (table === 'members') {
+        const m = row || old;
+        const i = S.ctx.members.findIndex((x) => x.user_id === m.user_id);
+        if (p.eventType === 'DELETE') { if (i >= 0) S.ctx.members.splice(i, 1); }
+        else if (i >= 0) S.ctx.members[i] = row; else S.ctx.members.push(row);
+        S.afterLoad();
+        return S.emit();
+      }
+      if (table === 'branches') {
+        const b = row || old;
+        const i = S.ctx.branches.findIndex((x) => x.id === b.id);
+        if (p.eventType === 'DELETE') { if (i >= 0) S.ctx.branches.splice(i, 1); }
+        else if (i >= 0) S.ctx.branches[i] = row; else S.ctx.branches.push(row);
+        if (row && row.id === S.ctx.branchId && !outbox.has('settings')) {
+          const next = deepMerge(PZ.seed.settings(), row.settings || {});
+          replaceInPlace(S.data.settings, next);
+          shadow.set('settings', JSON.stringify(S.data.settings));
+        }
+        return S.emit();
+      }
+      let name;
+      let id;
+      if (table === 'orders') {
+        name = 'orders';
+        id = (row || old).id;
+        if (row && row.branch_id !== S.ctx.branchId) return;
+      } else {
+        const r = row || old;
+        name = COL_TO_NAME[r.col];
+        if (!name) return;
+        if (row && COLS[name].scope === 'branch' && row.branch_id !== S.ctx.branchId) return;
+        if (!row && COLS[name].scope === 'branch' && !String(r.id).startsWith(S.ctx.branchId + '/')) return;
+        id = localId(r.id);
+      }
+      const key = keyOf(name, id);
+      const arr = S.data[name];
+      const idx = arr.findIndex((x) => x.id === id);
+      if (p.eventType === 'DELETE') {
+        if (idx >= 0) arr.splice(idx, 1);
+        shadow.delete(key);
+        outbox.delete(key);
+      } else {
+        const pending = outbox.get(key);
+        const merged = { ...row.data, id, ...(pending && pending.patch ? pending.patch : {}) };
+        if (idx >= 0) replaceInPlace(arr[idx], merged);
+        else arr.push(merged);
+        if (COLS[name].sort || COLS[name].ordered) S.data[name] = sortCol(name, arr);
+        shadow.set(key, JSON.stringify(idx >= 0 ? arr.find((x) => x.id === id) : merged));
+      }
+      if (name === 'orders') S.data.demo = S.data.orders.some((o) => o.demo);
+      S.cache();
+      clearTimeout(S._remoteTimer);
+      S._remoteTimer = setTimeout(() => S.emit(), 120);
+      if (S.onRemoteHook) S.onRemoteHook(name, id, p.eventType);
+    },
+
+    /* =================== Numeración =================== */
+    // Cada equipo reserva bloques de números en la base. Así se puede
+    // vender sin internet sin que dos cajas repitan número.
+    pools() {
+      try { return JSON.parse(localStorage.getItem(`pz-pool-${S.ctx.branchId}`)) || {}; } catch (e) { return {}; }
+    },
+    savePools(p) { localStorage.setItem(`pz-pool-${S.ctx.branchId}`, JSON.stringify(p)); },
+    poolLeft(kind) { return (S.pools()[kind] || []).reduce((a, [s, e]) => a + (e - s + 1), 0); },
+
+    async ensurePools() {
+      if (!navigator.onLine || !S.ctx.branchId) return;
+      for (const kind of ['order', 'ticket']) {
+        if (S.poolLeft(kind) >= 10) continue;
+        try {
+          const n = 30;
+          const start = await PZ.cloud.reserve(S.ctx.branchId, kind, n);
+          const p = S.pools();
+          p[kind] = (p[kind] || []).concat([[start, start + n - 1]]);
+          S.savePools(p);
+        } catch (e) { console.warn('reserve', e); }
+      }
+    },
+
+    nextNumber(kind) {
+      const p = S.pools();
+      const blocks = p[kind] || [];
+      let n;
+      if (blocks.length) {
+        n = blocks[0][0];
+        blocks[0][0]++;
+        if (blocks[0][0] > blocks[0][1]) blocks.shift();
+        p[kind] = blocks;
+        S.savePools(p);
+      } else {
+        // sin números reservados y sin internet: número provisorio único
+        n = 900000 + (Math.floor(Date.now() / 1000) % 100000);
+      }
+      if (S.poolLeft(kind) < 10) S.ensurePools();
+      return n;
     },
 
     /* =================== Helpers de catálogo =================== */
@@ -331,6 +430,8 @@
     user: (id) => S.data.users.find((u) => u.id === id),
     customer: (id) => S.data.customers.find((c) => c.id === id),
     zone: (id) => S.data.settings.zones.find((z) => z.id === id),
+    branch: (id) => S.ctx.branches.find((b) => b.id === (id || S.ctx.branchId)),
+    branchName: (id) => { const b = S.branch(id); return b ? b.name : ''; },
 
     /** Construye una línea de pedido con precio calculado */
     makeItem({ product, variant, half = null, extras = [], qty = 1, notes = '' }) {
@@ -339,17 +440,14 @@
         const p2 = half.variant.price;
         unit = S.data.settings.halfPricing === 'avg' ? Math.round((unit + p2) / 2) : Math.max(unit, p2);
       }
-      const extrasTotal = extras.reduce((a, e) => a + (Number(e.price) || 0), 0);
-      unit += extrasTotal;
-      let name = product.name;
-      if (half) name = `½ ${product.name} + ½ ${half.product.name}`;
+      unit += extras.reduce((a, e) => a + (Number(e.price) || 0), 0);
       return {
         id: U.uid('it-'),
         productId: product.id,
         variantId: variant.id,
         variantName: product.variants.length > 1 ? variant.name : '',
         half: half ? { productId: half.product.id, name: half.product.name } : null,
-        name,
+        name: half ? `½ ${product.name} + ½ ${half.product.name}` : product.name,
         extras: extras.map((e) => ({ id: e.id, name: e.name, price: Number(e.price) || 0 })),
         qty,
         unitPrice: unit,
@@ -360,7 +458,6 @@
 
     /* =================== Pedidos =================== */
     computeTotals(o) {
-      const p = S.data.settings.payments;
       o.subtotal = o.items.reduce((a, it) => a + it.unitPrice * it.qty, 0);
       let disc = 0;
       if (o.discount && o.discount.value) {
@@ -373,11 +470,10 @@
     },
 
     createOrder(draft, { paid = false, payments = [], adjust = {} } = {}) {
-      const d = S.data;
       const now = Date.now();
       const o = {
         id: U.uid('o-'),
-        number: d.counters.order++,
+        number: S.nextNumber('order'),
         ticketNumber: null,
         createdAt: now,
         paidAt: null,
@@ -392,6 +488,7 @@
         items: draft.items.map((x) => ({ ...x })),
         discount: draft.discount || null,
         surcharge: 0,
+        cashDiscount: 0,
         deliveryFee: draft.deliveryFee || 0,
         payments: [],
         paid: false,
@@ -404,7 +501,6 @@
         voided: false,
       };
       S.computeTotals(o);
-      // Cliente: alta/actualización automática si hay teléfono o nombre
       if (!o.customerId && (o.phone || (o.customerName && o.type === 'delivery'))) {
         const c = S.upsertCustomer({ name: o.customerName, phone: o.phone, address: o.address, zoneId: o.zoneId });
         o.customerId = c.id;
@@ -412,17 +508,14 @@
         const c = S.customer(o.customerId);
         if (c && !c.address) c.address = o.address;
       }
-      d.orders.push(o);
+      S.data.orders.push(o);
       S.applyStock(o, -1);
       if (paid) S.payOrder(o.id, payments, { silent: true, ...adjust });
       S.save();
       return o;
     },
 
-    /**
-     * Registra el cobro. `adjust` trae el descuento por efectivo o el
-     * recargo por tarjeta calculados en la pantalla de cobro.
-     */
+    /** Registra el cobro (con descuento por efectivo o recargo por tarjeta si corresponde) */
     payOrder(orderId, payments, { silent = false, cashDiscount = 0, surcharge = 0 } = {}) {
       const o = S.order(orderId);
       if (!o) return null;
@@ -434,8 +527,9 @@
       o.payments = payments.map((p) => ({ ...p }));
       o.paid = true;
       o.paidAt = Date.now();
-      o.ticketNumber = S.data.counters.ticket++;
+      o.ticketNumber = S.nextNumber('ticket');
       o.cashSessionId = sess ? sess.id : null;
+      o.paidBy = PZ.auth.current ? PZ.auth.current.id : null;
       if (!silent) S.save();
       return o;
     },
@@ -446,8 +540,7 @@
       const o = S.order(orderId);
       if (!o) return;
       o.status = status;
-      o.statusTimes = o.statusTimes || {};
-      o.statusTimes[status] = Date.now();
+      o.statusTimes = { ...(o.statusTimes || {}), [status]: Date.now() };
       S.save();
     },
 
@@ -465,16 +558,16 @@
     },
 
     log(action, detail) {
-      S.data.audit.unshift({ at: Date.now(), userId: PZ.auth.current ? PZ.auth.current.id : null, action, detail });
-      if (S.data.audit.length > 500) S.data.audit.length = 500;
+      S.data.audit.unshift({ id: U.uid('lg-'), at: Date.now(), userId: PZ.auth.current ? PZ.auth.current.id : null, action, detail });
+      if (S.data.audit.length > 300) S.data.audit.length = 300;
     },
 
-    /* =================== Clientes =================== */
+    /* =================== Clientes (compartidos por todas las sucursales) =================== */
     upsertCustomer({ id, name, phone, address, zoneId, notes }) {
       const clean = (s) => String(s || '').replace(/\D/g, '');
       let c = id ? S.customer(id) : phone ? S.data.customers.find((x) => clean(x.phone) && clean(x.phone) === clean(phone)) : null;
       if (!c) {
-        c = { id: U.uid('cl-'), name: name || 'Cliente', phone: phone || '', address: address || '', zoneId: zoneId || null, notes: notes || '', createdAt: Date.now() };
+        c = { id: U.uid('cl-'), name: name || 'Cliente', phone: phone || '', address: address || '', zoneId: zoneId || null, notes: notes || '', createdAt: Date.now(), branchId: S.ctx.branchId };
         S.data.customers.push(c);
       } else {
         if (name) c.name = name;
@@ -521,7 +614,7 @@
       return {
         orders: valid, voided: orders.filter((o) => o.voided), byMethod, moves, ingresos, egresos, sales, expectedCash,
         tickets: valid.length, avg: valid.length ? sales / valid.length : 0,
-        discounts: valid.reduce((a, o) => a + (o.discountAmount || 0), 0),
+        discounts: valid.reduce((a, o) => a + (o.discountAmount || 0) + (o.cashDiscount || 0), 0),
         delivery: valid.reduce((a, o) => a + (o.deliveryFee || 0), 0),
       };
     },
@@ -550,11 +643,11 @@
       return m;
     },
 
-    /* =================== Stock =================== */
+    /* =================== Stock (por sucursal) =================== */
     applyStock(o, sign) {
       o.items.forEach((it) => {
-        const parts = it.half ? [[it.productId, 0.5], [it.half.productId, 0.5]] : [[it.productId, 1]];
-        parts.forEach(([pid, share]) => {
+        const parts = it.half ? [[it.productId, 0.5, false], [it.half.productId, 0.5, true]] : [[it.productId, 1, false]];
+        parts.forEach(([pid, share, second]) => {
           const p = S.product(pid);
           if (!p || !p.recipe || !p.recipe.length) return;
           const v = p.variants.find((x) => x.id === it.variantId) || p.variants[0];
@@ -562,8 +655,8 @@
           p.recipe.forEach((r) => {
             const ing = S.data.ingredients.find((i) => i.id === r.ingredientId);
             if (!ing) return;
-            // las cajas no se dividen en mitades
-            const q = ing.unit === 'u' ? r.qty * it.qty * (it.half && share === 0.5 && pid === it.half.productId ? 0 : 1) : r.qty * factor * share * it.qty;
+            // las unidades (cajas) no se dividen en mitades ni por tamaño
+            const q = ing.unit === 'u' ? (second ? 0 : r.qty * it.qty) : r.qty * factor * share * it.qty;
             ing.stock = Math.round((ing.stock + sign * q) * 1000) / 1000;
           });
         });
@@ -575,25 +668,71 @@
       if (!ing) return;
       ing.stock = Math.round((ing.stock + Number(delta)) * 1000) / 1000;
       S.data.stockMoves.unshift({ id: U.uid('sm-'), ingredientId, delta: Number(delta), reason, at: Date.now(), userId: PZ.auth.current.id });
-      if (S.data.stockMoves.length > 1000) S.data.stockMoves.length = 1000;
+      if (S.data.stockMoves.length > 500) S.data.stockMoves.length = 500;
       S.save();
     },
 
     lowStock: () => S.data.ingredients.filter((i) => i.stock <= i.min),
 
-    /* =================== Demo =================== */
-    clearDemo() {
-      const d = S.data;
-      d.orders = [];
-      d.cashSessions = [];
-      d.cashMoves = [];
-      d.stockMoves = [];
-      d.counters = { order: 1, ticket: 1 };
-      d.demo = false;
+    /* =================== Datos iniciales y demo =================== */
+    /** Si el negocio no tiene menú todavía, carga el de ejemplo */
+    seedIfEmpty({ customers = true } = {}) {
+      let changed = false;
+      if (!S.data.categories.length && PZ.auth.isAdmin()) {
+        const c = PZ.seed.catalog();
+        S.data.categories = c.categories;
+        S.data.products = c.products;
+        S.data.extras = c.extras;
+        if (customers && !S.data.customers.length) S.data.customers = PZ.seed.customers();
+        changed = true;
+      }
+      if (!S.data.ingredients.length && PZ.auth.isAdmin()) {
+        S.data.ingredients = PZ.seed.ingredients(true);
+        changed = true;
+      }
+      if (changed) S.save();
+      return changed;
+    },
+
+    async clearDemo() {
+      S.diff();
+      await S.flush();
+      const { error } = await PZ.cloud.sb.rpc('clear_demo', { p_branch: S.ctx.branchId });
+      if (error) throw error;
+      S.data.orders = S.data.orders.filter((o) => !o.demo);
+      S.data.cashSessions = S.data.cashSessions.filter((s) => !s.demo);
+      S.data.cashMoves = S.data.cashMoves.filter((m) => !m.demo);
+      S.rebuildShadow();
+      S.data.demo = false;
       S.log('sistema', 'Se borraron las ventas de demostración');
       S.save();
     },
+
+    /** Respaldo descargable de la sucursal (además de lo que ya está en la nube) */
+    exportBackup() {
+      return JSON.stringify({ exportedAt: new Date().toISOString(), org: S.ctx.org, branch: S.branch(), data: S.data });
+    },
+
+    deepMerge: (a, b) => deepMerge(a, b),
   });
+
+  function queue(key, op) {
+    const prev = outbox.get(key);
+    if (!prev || op.del || prev.del || op.name === 'settings') outbox.set(key, op);
+    else prev.patch = { ...prev.patch, ...op.patch };
+  }
+
+  function sortCol(name, arr) {
+    const cfg = COLS[name];
+    if (cfg.ordered) return arr.sort((a, b) => (a._i ?? 1e9) - (b._i ?? 1e9));
+    if (cfg.sort) return arr.sort(cfg.sort);
+    return arr;
+  }
+
+  function replaceInPlace(target, next) {
+    Object.keys(target).forEach((k) => { if (!(k in next)) delete target[k]; });
+    Object.assign(target, next);
+  }
 
   function deepMerge(base, over) {
     const out = Array.isArray(base) ? [...base] : { ...base };
