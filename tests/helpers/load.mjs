@@ -58,7 +58,8 @@ export function loadApp({ online = true } = {}) {
   PZ.auth.current = { id: 'u-owner', name: 'Dueño', role: 'owner', branchIds: [], orgId: 'org-1' };
 
   const plain = (x) => JSON.parse(JSON.stringify(x));
-  return { PZ, S, U: PZ.util, sent, plain, localStorage };
+  const setOnline = (v) => { ctx.navigator.onLine = v; };
+  return { PZ, S, U: PZ.util, sent, plain, localStorage, setOnline };
 }
 
 /** Menú mínimo con receta, para probar precios y costos */

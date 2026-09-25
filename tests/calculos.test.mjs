@@ -124,8 +124,8 @@ test('ganancia: ventas − gastos, y rendimiento por persona', () => {
 });
 
 test('anular requiere conexión', async () => {
-  const { S, PZ } = setup();
+  const { S, setOnline } = setup();
   const o = S.createOrder({ type: 'mostrador', items: [S.makeItem({ product: P(S, 'p-muz'), variant: V(S, 'p-muz', 'grande') })] });
-  PZ.window.navigator.onLine = false;
+  setOnline(false);
   await assert.rejects(() => S.voidOrder(o.id, 'error de carga'), /conexión/);
 });

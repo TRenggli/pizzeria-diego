@@ -101,6 +101,8 @@
     /* ===================== INGRESO ===================== */
     renderLogin(errMsg = '') {
       clearInterval(clockTimer);
+      // no dejar ventanas abiertas de la sesión anterior
+      document.querySelectorAll('.modal-back').forEach((m) => m.remove());
       root().innerHTML = `
         <div class="login">
           <div class="floaters">${App.floaters()}</div>

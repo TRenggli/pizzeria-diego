@@ -68,14 +68,14 @@ test('cambios de configuración van a la sucursal', async () => {
 });
 
 test('sin internet los cambios quedan en cola y se envían después', async () => {
-  const { S, PZ, sent } = setup();
-  PZ.window.navigator.onLine = false;
+  const { S, sent, setOnline } = setup();
+  setOnline(false);
   S.data.customers.push({ id: 'cl-1', name: 'María' });
   S.diff();
   await S.flush();
   assert.equal(sent.docs.length, 0);
   assert.equal(S.status.pending, 1);
-  PZ.window.navigator.onLine = true;
+  setOnline(true);
   await S.flush();
   assert.equal(sent.docs.length, 1);
   assert.equal(S.status.pending, 0);
@@ -106,18 +106,22 @@ test('si la nube rechaza un cambio (regla de seguridad) no se reintenta para sie
 });
 
 test('un cambio de otro equipo se aplica sin pisar lo que falta enviar', async () => {
-  const { S, PZ } = setup();
-  PZ.window.navigator.onLine = false;
+  const { S, setOnline } = setup();
+  // el pedido ya está en la nube
   S.data.orders.push({ id: 'o-1', createdAt: 1, status: 'pendiente', paid: false, items: [] });
   S.diff();
-  // la cocina cambió el estado desde otra tablet...
+  await S.flush();
+  // se corta internet y en esta caja se agrega una nota (queda sin enviar)
+  setOnline(false);
   const o = S.data.orders[0];
-  o.notes = 'sin sal'; // ...mientras acá se agregó una nota que todavía no se envió
+  o.notes = 'sin sal';
   S.diff();
+  // mientras tanto la cocina lo pasó al horno desde otra tablet
   S.onRemote('orders', { eventType: 'UPDATE', new: { id: 'o-1', branch_id: 'br-1', data: { id: 'o-1', createdAt: 1, status: 'horno', paid: false, items: [] } }, old: {} });
   assert.equal(o.status, 'horno', 'llegó el cambio de la cocina');
   assert.equal(o.notes, 'sin sal', 'se conservó la nota local');
   assert.equal(S.data.orders.length, 1, 'se actualizó el mismo objeto, no se duplicó');
+  assert.equal(S.status.pending, 1, 'la nota sigue esperando para enviarse');
 });
 
 test('los cambios de otra sucursal se ignoran', () => {

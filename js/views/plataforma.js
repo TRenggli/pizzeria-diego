@@ -28,7 +28,8 @@
   async function load(el) {
     let orgs;
     try { orgs = await PZ.cloud.platformOrgs(); } catch (e) { el.querySelector('.p-body').innerHTML = `<div class="card empty">🔥 ${U.esc(e.message)}</div>`; return; }
-    if (!el.isConnected) return;
+    // si mientras cargaba se cambió de pantalla, no dibujar
+    if (!el.isConnected || !el.querySelector('.p-body')) return;
     const draw = () => {
       const q = U.stripAccents(el.querySelector('.q').value.toLowerCase());
       const list = orgs.filter((o) => !q || U.stripAccents(`${o.name} ${o.owner ? o.owner.name + ' ' + o.owner.username : ''}`.toLowerCase()).includes(q));
@@ -187,7 +188,7 @@
     el.innerHTML = '<div class="card empty"><span class="e-ico">🐞</span>Cargando…</div>';
     let rows, orgs;
     try { [rows, orgs] = await Promise.all([PZ.cloud.errors(300), PZ.cloud.platformOrgs()]); } catch (e) { el.innerHTML = `<div class="card empty">${U.esc(e.message)}</div>`; return; }
-    if (!el.isConnected) return;
+    if (!el.isConnected || PZ.app.currentView !== 'p-errores') return;
     const orgName = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
     const groups = {};
     rows.forEach((r) => {

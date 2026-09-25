@@ -16,8 +16,9 @@ Un negocio de una sola persona funciona igual: el dueño tiene todas las funcion
 
 1. **Vos** (plataforma) creás el negocio y el usuario del dueño → le mandás los datos por WhatsApp desde el mismo panel.
 2. **El dueño** crea sucursales y genera un **código** para el encargado de cada una (`ABCD-1234`, un solo uso, vence en 7 días).
-3. **El encargado** entra a la página → *Tengo un código de sucursal* → elige su usuario y contraseña. Queda solo en su sucursal.
-4. **El encargado** genera códigos para cajeros, cocina y delivery, o les crea el usuario directamente.
+3. **El encargado** abre el **enlace** (o escanea el QR, o toca *Tengo un código de sucursal*) → elige su usuario y contraseña. Queda solo en su sucursal.
+4. **El encargado** genera enlaces para cajeros, cocina y delivery de su sucursal, o les crea el usuario directamente.
+5. **Al primer ingreso** cada persona completa su perfil: nombre completo, teléfono y CUIL (se valida el dígito verificador). Desde *Mi perfil* cambia foto, correo y contraseña. El dueño y el encargado ven los datos de su gente en *Equipo*.
 
 ## Qué ve el dueño
 
@@ -25,6 +26,21 @@ Un negocio de una sola persona funciona igual: el dueño tiene todas las funcion
 - **Finanzas:** por sucursal y total: ventas, gastos, ganancia, margen, food cost (costo teórico de mercadería según recetas), ventas vs gastos por día y en qué se gasta.
 - **Equipo:** por persona: cuánto cobró, tickets, ticket promedio, descuentos, anulaciones, diferencias en los cierres de caja que hizo, sueldo pagado y cuánto vende por cada $1 de sueldo.
 - **Menú modelo:** menú oficial del negocio que se copia a las sucursales nuevas; se puede mandar a las existentes (solo precios, agregar faltantes o reemplazar) y aumentar precios en varias sucursales a la vez.
+
+## Seguridad del dinero (la base de datos manda)
+
+- Una venta cobrada no se puede modificar: solo cambian su estado, repartidor y notas.
+- El servidor verifica que subtotal, descuentos, envío, total y pagos cierren con los productos.
+- Anular solo lo hace el dueño o un encargado, por una función del servidor que registra quién y por qué. Si opera un cajero, un encargado autoriza con sus datos.
+- Las ventas reales no se pueden borrar (solo las de demostración). Una caja cerrada no se modifica.
+- Cada equipo guarda 45 días de ventas; lo anterior se consulta a la nube.
+
+## Calidad
+
+- `tests/*.test.mjs`: 26 pruebas de cálculos de dinero, CUIL, fechas y sincronización (`node --test tests/*.test.mjs`).
+- `supabase/tests/integridad.sql`: 18 pruebas de seguridad que simulan cajeros y encargados intentando hacer trampa (se deshacen solas).
+- GitHub Actions corre las pruebas en cada cambio y **publica la página solo si pasan**.
+- Los errores que tenga la app en los equipos de los clientes quedan registrados en *Plataforma → Errores de la app*.
 
 ## Datos separados por sucursal
 
@@ -57,6 +73,8 @@ js/views/plataforma.js panel del creador
 js/views/negocio.js    panel del dueño (resumen, sucursales, finanzas, menú modelo)
 js/views/equipo.js     equipo, códigos y rendimiento (sucursal y negocio)
 js/views/gastos.js     gastos y ganancias de la sucursal
+js/views/perfil.js     perfil de cada persona (foto, teléfono, CUIL, correo, contraseña)
+tests/                 pruebas automáticas
 js/views/*.js          operación de la sucursal
 supabase/migrations/   esquema, RLS y funciones SQL
 supabase/functions/    platform · join · staff · register (cerrado)

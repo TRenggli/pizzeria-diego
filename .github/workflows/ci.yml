@@ -1,0 +1,58 @@
+# Pruebas en cada cambio. La página se publica SOLO si todo pasa.
+name: Pruebas y publicación
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  pruebas:
+    name: Pruebas automáticas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sintaxis de todos los archivos
+        run: for f in js/*.js js/views/*.js sw.js; do node --check "$f"; done
+      - name: Cálculos, sincronización y utilidades
+        run: node --test tests/*.test.mjs
+      - name: Sin credenciales en el código
+        run: |
+          # claves secretas nuevas (sb_secret_) o tokens JWT de servicio ("service_role" en base64)
+          if grep -rInE "sb_secret_|c2VydmljZV9yb2xl" --include=*.js --include=*.html --exclude-dir=vendor --exclude-dir=.git . ; then
+            echo "Se encontró una clave privada en el código del cliente"; exit 1
+          fi
+
+  publicar:
+    name: Publicar en GitHub Pages
+    needs: pruebas
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Armar solo los archivos del sitio
+        run: |
+          mkdir _site
+          cp -r index.html manifest.webmanifest sw.js css js img vendor _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
