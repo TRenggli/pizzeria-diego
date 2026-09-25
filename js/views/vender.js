@@ -168,7 +168,7 @@
     const t = cartTotals();
     const count = cart.items.reduce((a, i) => a + i.qty, 0);
     const cust = cart.customerName || cart.phone ? `${U.esc(cart.customerName || 'Cliente')}${cart.phone ? ' · ' + U.esc(cart.phone) : ''}` : '';
-    const types = Object.keys(L().type);
+    const types = Object.keys(L().type).filter((k) => (k !== 'delivery' || PZ.auth.feature('delivery')) && (k !== 'mesa' || PZ.auth.feature('mesas')));
     box.innerHTML = `
       <div class="cart-head">
         <div class="row-flex space-between">

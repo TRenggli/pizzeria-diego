@@ -129,14 +129,16 @@
       size: 'sm',
       body: `<label class="field"><span>Monto</span><input class="amt" inputmode="numeric" autofocus></label>
              <label class="field"><span>Motivo</span><input class="reason" placeholder="${type === 'ingreso' ? 'Ej: cambio traído del banco' : 'Ej: pago al proveedor de queso'}" list="reasons"></label>
-             <datalist id="reasons">${(type === 'egreso' ? ['Compra de mercadería', 'Pago a proveedor', 'Pago a repartidor', 'Retiro del dueño', 'Gas / servicios'] : ['Cambio para vuelto', 'Ajuste']).map((r) => `<option>${r}</option>`).join('')}</datalist>`,
+             <datalist id="reasons">${(type === 'egreso' ? ['Compra de mercadería', 'Pago a proveedor', 'Pago a repartidor', 'Retiro del dueño', 'Gas / servicios'] : ['Cambio para vuelto', 'Ajuste']).map((r) => `<option>${r}</option>`).join('')}</datalist>
+             ${type === 'egreso' ? `<label class="field"><span>¿Es un gasto del negocio?</span><select class="cat"><option value="">No, es un retiro (ej: se lo lleva el dueño)</option>${S.EXPENSE_CATEGORIES.map((c) => `<option ${c === 'Mercadería' ? 'selected' : ''}>${c}</option>`).join('')}</select></label>` : ''}`,
       footer: `<button class="btn ghost" data-a="x">Cancelar</button><button class="btn primary" data-a="ok">Registrar</button>`,
     });
     m.el.querySelector('[data-a=x]').onclick = () => m.close();
     m.el.querySelector('[data-a=ok]').onclick = () => {
       const amt = U.parseMoney(m.el.querySelector('.amt').value);
       if (!amt) return PZ.toast('Ingresá un monto', 'warn');
-      S.addCashMove(type, amt, m.el.querySelector('.reason').value.trim());
+      const cat = m.el.querySelector('.cat');
+      S.addCashMove(type, amt, m.el.querySelector('.reason').value.trim(), cat && PZ.auth.feature('gastos') ? cat.value : '');
       m.close();
       PZ.toast('Movimiento registrado');
       done();

@@ -1,23 +1,38 @@
 /* ==========================================================================
-   PZ.auth — sesión (Supabase Auth), roles y permisos
+   PZ.auth — sesión, niveles (plataforma / negocio / sucursal), roles,
+   permisos y módulos contratados por cada negocio
    ========================================================================== */
 (function (PZ) {
   const U = PZ.util;
 
   const ROLES = {
-    owner: { label: 'Dueño/a', can: ['*'] },
-    admin: { label: 'Encargado/a', can: ['*'] },
-    cajero: { label: 'Cajero/a', can: ['inicio', 'vender', 'pedidos', 'caja', 'clientes', 'historial', 'stock'] },
-    cocina: { label: 'Cocina', can: ['pedidos'] },
-    delivery: { label: 'Delivery', can: ['pedidos'] },
+    owner: { label: 'Dueño/a' },
+    admin: { label: 'Encargado/a' },
+    cajero: { label: 'Cajero/a' },
+    cocina: { label: 'Cocina' },
+    delivery: { label: 'Delivery' },
   };
+
+  // Qué puede usar cada rol DENTRO de una sucursal
+  const BRANCH_ACCESS = {
+    owner: '*',
+    admin: '*',
+    cajero: ['inicio', 'vender', 'pedidos', 'caja', 'clientes', 'historial', 'stock'],
+    cocina: ['pedidos'],
+    delivery: ['pedidos'],
+  };
+
+  // Secciones que dependen de un módulo contratado
+  const FEATURE_OF = { stock: 'stock', gastos: 'gastos' };
 
   const A = (PZ.auth = {
     ROLES,
-    current: null,   // { id, name, username, role, branchIds, orgId }
+    current: null,     // { id, name, username, role, branchIds, orgId }
     memberships: [],
+    platform: false,   // es el administrador de la plataforma
+    me: null,          // usuario de Supabase
 
-    /** Con la membresía elegida arma el usuario actual */
+    /** Arma el usuario actual para un negocio */
     use(member) {
       A.current = {
         id: member.user_id,
@@ -26,16 +41,25 @@
         role: member.role,
         branchIds: member.branch_ids || [],
         orgId: member.org_id,
+        support: !!member.support,
       };
       return A.current;
     },
 
+    /** La plataforma entra a un negocio como si fuera el dueño (soporte) */
+    useSupport(org) {
+      const meta = (A.me && A.me.user_metadata) || {};
+      return A.use({ user_id: A.me.id, name: meta.name || 'Soporte', username: 'soporte', role: 'owner', branch_ids: [], org_id: org.id, support: true });
+    },
+
     async login(user, password) {
-      await PZ.cloud.signIn(user, password);
+      const session = await PZ.cloud.signIn(user, password);
+      A.me = session.user;
+      A.platform = await PZ.cloud.isPlatformAdmin();
       A.memberships = await PZ.cloud.memberships();
-      if (!A.memberships.length) {
+      if (!A.platform && !A.memberships.length) {
         await PZ.cloud.signOut();
-        throw new Error('Tu usuario no pertenece a ningún negocio activo. Hablá con el dueño.');
+        throw new Error('Tu usuario no tiene acceso a ningún negocio activo. Hablá con el dueño o con el administrador del sistema.');
       }
       return A.memberships;
     },
@@ -43,22 +67,33 @@
     async logout() {
       A.current = null;
       A.memberships = [];
+      A.platform = false;
+      A.me = null;
       await PZ.cloud.signOut();
     },
 
+    /** Módulo habilitado para el negocio actual */
+    feature(name) {
+      const org = PZ.store.ctx.org;
+      const f = (org && org.features) || {};
+      return f[name] !== false;
+    },
+
+    /** ¿Puede entrar a esta sección de la sucursal? */
     can(section) {
       if (!A.current) return false;
-      if (section === 'sucursales') return A.isAdmin();
-      const r = ROLES[A.current.role];
-      return !!r && (r.can.includes('*') || r.can.includes(section));
+      if (FEATURE_OF[section] && !A.feature(FEATURE_OF[section])) return false;
+      if (['gastos', 'equipo', 'menu', 'reportes', 'config'].includes(section)) return A.isAdmin();
+      const acc = BRANCH_ACCESS[A.current.role];
+      return acc === '*' || (acc || []).includes(section);
     },
 
     isAdmin: () => !!A.current && ['owner', 'admin'].includes(A.current.role),
     isOwner: () => !!A.current && A.current.role === 'owner',
 
     /**
-     * Para acciones sensibles (anular, cancelar, descuento grande) cuando el
-     * usuario no es encargado: pide usuario y clave de un encargado o dueño.
+     * Acciones sensibles (anular, cancelar, descuento grande) hechas por
+     * alguien que no es encargado: pide usuario y clave de un encargado.
      */
     requireAdmin(reason = 'Esta acción requiere autorización') {
       if (A.isAdmin()) return Promise.resolve(true);
@@ -86,7 +121,7 @@
           if (!valid) return PZ.toast('Datos incorrectos o sin permiso de encargado', 'err');
           done = true;
           m.close();
-          PZ.store.log('autorización', `${reason} (autorizado por otro usuario)`);
+          PZ.store.log('autorización', `${reason} (autorizado por un encargado)`);
           resolve(true);
         };
       });

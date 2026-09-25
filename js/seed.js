@@ -158,18 +158,39 @@
         plan.push({ dayStart, n: Math.round((dow === 5 || dow === 6 ? 34 : dow === 0 ? 28 : 18) * (0.8 + Math.random() * 0.4) * scale) });
       }
       const total = plan.reduce((a, p) => a + p.n, 0);
-      const [orderStart, ticketStart] = await Promise.all([
-        PZ.cloud.reserve(S.ctx.branchId, 'order', total),
-        PZ.cloud.reserve(S.ctx.branchId, 'ticket', total),
-      ]);
+      // La base reserva de a 500 como máximo: se piden tandas
+      const reserveMany = async (kind) => {
+        const nums = [];
+        for (let left = total; left > 0; left -= 400) {
+          const n = Math.min(400, left);
+          const start = await PZ.cloud.reserve(S.ctx.branchId, kind, n);
+          for (let i = 0; i < n; i++) nums.push(start + i);
+        }
+        return nums;
+      };
+      const orderNums = await reserveMany('order');
+      const ticketNums = await reserveMany('ticket');
       let k = 0;
       const uid = PZ.auth.current ? PZ.auth.current.id : null;
+      // Las ventas se reparten entre quienes cobran en la sucursal
+      const bid = S.ctx.branchId;
+      const staff = S.ctx.members.filter((m) => m.active && ['owner', 'admin', 'cajero'].includes(m.role) && (m.role === 'owner' || !(m.branch_ids || []).length || m.branch_ids.includes(bid)));
+      const cashiers = staff.filter((m) => m.role !== 'owner');
+      const pickSeller = () => (cashiers.length && Math.random() < 0.85 ? rnd(cashiers) : rnd(staff.length ? staff : [{ user_id: uid }])).user_id;
+      const payroll = S.ctx.members.filter((m) => m.active && m.role !== 'owner' && ((m.branch_ids || []).includes(bid)));
+      const exp = (at, category, amount, description, extra = {}) => d.expenses.push({
+        id: U.uid('gx-'), at, category, amount: Math.round(amount / 100) * 100, description, method: 'transferencia', supplier: '',
+        employeeId: '', source: 'manual', cashMoveId: '', userId: uid, demo: true, ...extra,
+      });
+      let bucketSales = 0;
+      let digital = 0;
       plan.forEach(({ dayStart, n }) => {
         const session = {
           id: U.uid('cs-'), openedAt: dayStart.getTime() + 18.5 * 36e5, openedBy: uid, openingAmount: 20000,
           closedAt: null, closedBy: uid, countedCash: 0, expectedCash: 0, diff: 0, notes: '', demo: true,
         };
         let cashIn = 0;
+        let daySales = 0;
         for (let i = 0; i < n; i++, k++) {
           const hour = Math.random() < 0.15 ? 12 + Math.random() * 2 : 19.5 + Math.random() * 4;
           const at = Math.round(dayStart.getTime() + hour * 36e5);
@@ -193,9 +214,12 @@
           const method = rnd(methods);
           const tendered = method === 'efectivo' ? Math.ceil(tot / 5000) * 5000 : tot;
           if (method === 'efectivo') cashIn += tot;
+          if (method === 'qr' || method === 'tarjeta') digital += tot;
+          daySales += tot;
+          const seller = pickSeller();
           d.orders.push({
-            id: U.uid('o-'), number: orderStart + k, ticketNumber: ticketStart + k,
-            createdAt: at, paidAt: at + 60000, userId: uid, type,
+            id: U.uid('o-'), number: orderNums[k], ticketNumber: ticketNums[k],
+            createdAt: at, paidAt: at + 60000, userId: seller, paidBy: seller, type,
             table: type === 'mesa' ? String(1 + Math.floor(Math.random() * 12)) : '',
             customerId: cust ? cust.id : null, customerName: cust ? cust.name : '', phone: cust ? cust.phone : '', address: cust && type === 'delivery' ? cust.address : '',
             zoneId: zone ? zone.id : null, items, subtotal, discountAmount: 0, discount: null, surcharge: 0, cashDiscount: 0,
@@ -211,9 +235,30 @@
         session.countedCash = session.expectedCash + diff;
         session.diff = diff;
         d.cashSessions.push(session);
-        d.cashMoves.push({ id: U.uid('cm-'), sessionId: session.id, type: 'egreso', amount: 5000, reason: 'Compra de verdura', at: session.openedAt + 36e5, userId: uid, demo: true });
+        session.openedBy = session.closedBy = pickSeller();
+        const cm = { id: U.uid('cm-'), sessionId: session.id, type: 'egreso', amount: 5000, reason: 'Compra de verdura', category: 'Mercadería', at: session.openedAt + 36e5, userId: uid, demo: true };
+        d.cashMoves.push(cm);
+        exp(cm.at, 'Mercadería', 5000, 'Compra de verdura', { method: 'efectivo', source: 'caja', cashMoveId: cm.id });
+
+        // Gastos de ejemplo: mercadería cada 2 días, sueldos y comisiones semanales, alquiler y servicios
+        bucketSales += daySales;
+        const di = plan.findIndex((x) => x.dayStart === dayStart);
+        const noon = dayStart.getTime() + 11 * 36e5;
+        if (di % 2 === 1) { exp(noon, 'Mercadería', bucketSales * (0.28 + Math.random() * 0.06), rnd(['Muzzarella y fiambres', 'Harina, salsa y verdura', 'Bebidas', 'Cajas y descartables']), { supplier: rnd(['La Serenísima', 'Distribuidora Norte', 'Mayorista Oeste']) }); bucketSales = 0; }
+        if (dayStart.getDay() === 5) {
+          if (payroll.length) payroll.forEach((m) => exp(noon + 36e5, 'Sueldos', (m.role === 'admin' ? 260000 : 180000) * scale, 'Semana de ' + m.name, { employeeId: m.user_id }));
+          else exp(noon + 36e5, 'Sueldos', 360000 * scale, 'Sueldos de la semana');
+          exp(noon + 2 * 36e5, 'Comisiones', digital * 0.045, 'Comisiones Mercado Pago y posnet');
+          digital = 0;
+        }
+        if (di === 0) {
+          exp(noon, 'Alquiler', 900000 * scale, 'Alquiler del local');
+          exp(noon + 36e5, 'Servicios', 140000 * scale, 'Luz y gas');
+        }
+        if (di === 7) exp(noon, 'Delivery', 60000 * scale, 'Nafta de las motos');
       });
       d.orders.sort((a, b) => a.createdAt - b.createdAt);
+      d.expenses.sort((a, b) => b.at - a.at);
       d.cashSessions.sort((a, b) => a.openedAt - b.openedAt);
       d.demo = true;
       S.save();

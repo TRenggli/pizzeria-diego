@@ -14,12 +14,13 @@
 (function (PZ) {
   const U = PZ.util;
 
-  /** Colecciones sincronizadas. scope org = compartidas entre sucursales. */
+  /** Colecciones sincronizadas. Todo es propio de cada sucursal. */
   const COLS = {
-    categories: { col: 'category', scope: 'org', ordered: true },
-    products: { col: 'product', scope: 'org', ordered: true },
-    extras: { col: 'extra', scope: 'org', ordered: true },
-    customers: { col: 'customer', scope: 'org' },
+    categories: { col: 'category', scope: 'branch', ordered: true },
+    products: { col: 'product', scope: 'branch', ordered: true },
+    extras: { col: 'extra', scope: 'branch', ordered: true },
+    customers: { col: 'customer', scope: 'branch' },
+    expenses: { col: 'expense', scope: 'branch', sort: (a, b) => b.at - a.at },
     ingredients: { col: 'ingredient', scope: 'branch', ordered: true },
     stockMoves: { col: 'stock_move', scope: 'branch', appendOnly: true, sort: (a, b) => b.at - a.at },
     cashSessions: { col: 'cash_session', scope: 'branch', sort: (a, b) => a.openedAt - b.openedAt },
@@ -84,7 +85,7 @@
       return {
         settings: settings || PZ.seed.settings(),
         users: [], categories: [], products: [], extras: [], customers: [], orders: [],
-        cashSessions: [], cashMoves: [], ingredients: [], stockMoves: [], audit: [],
+        cashSessions: [], cashMoves: [], ingredients: [], stockMoves: [], audit: [], expenses: [],
         demo: false,
       };
     },
@@ -441,6 +442,10 @@
         unit = S.data.settings.halfPricing === 'avg' ? Math.round((unit + p2) / 2) : Math.max(unit, p2);
       }
       unit += extras.reduce((a, e) => a + (Number(e.price) || 0), 0);
+      // costo teórico de mercadería según receta (para calcular ganancias)
+      const cost = half
+        ? Math.round((S.recipeCost(product, variant) + S.recipeCost(half.product, half.variant)) / 2)
+        : S.recipeCost(product, variant);
       return {
         id: U.uid('it-'),
         productId: product.id,
@@ -452,8 +457,20 @@
         qty,
         unitPrice: unit,
         total: unit * qty,
+        cost,
         notes,
       };
+    },
+
+    /** Costo de mercadería de una unidad según la receta y el costo de los insumos */
+    recipeCost(product, variant) {
+      if (!product || !product.recipe || !product.recipe.length) return 0;
+      const factor = (variant && variant.factor) || 1;
+      return Math.round(product.recipe.reduce((a, r) => {
+        const ing = S.data.ingredients.find((i) => i.id === r.ingredientId);
+        if (!ing || !ing.cost) return a;
+        return a + ing.cost * r.qty * (ing.unit === 'u' ? 1 : factor);
+      }, 0));
     },
 
     /* =================== Pedidos =================== */
@@ -558,6 +575,7 @@
     },
 
     log(action, detail) {
+      if (!S.data) return;
       S.data.audit.unshift({ id: U.uid('lg-'), at: Date.now(), userId: PZ.auth.current ? PZ.auth.current.id : null, action, detail });
       if (S.data.audit.length > 300) S.data.audit.length = 300;
     },
@@ -634,13 +652,62 @@
       return s;
     },
 
-    addCashMove(type, amount, reason) {
+    /** Ingreso o retiro de efectivo. Si es un gasto, además queda en Gastos. */
+    addCashMove(type, amount, reason, category = '') {
       const s = S.currentSession();
       if (!s) return null;
-      const m = { id: U.uid('cm-'), sessionId: s.id, type, amount: Number(amount) || 0, reason, at: Date.now(), userId: PZ.auth.current.id };
+      const m = { id: U.uid('cm-'), sessionId: s.id, type, amount: Number(amount) || 0, reason, category, at: Date.now(), userId: PZ.auth.current.id };
       S.data.cashMoves.push(m);
+      if (type === 'egreso' && category) {
+        S.addExpense({ category, description: reason, amount: m.amount, method: 'efectivo', source: 'caja', cashMoveId: m.id }, { silent: true });
+      }
       S.save();
       return m;
+    },
+
+    /* =================== Gastos =================== */
+    EXPENSE_CATEGORIES: ['Mercadería', 'Sueldos', 'Alquiler', 'Servicios', 'Impuestos', 'Delivery', 'Mantenimiento', 'Publicidad', 'Comisiones', 'Otros'],
+
+    addExpense(e, { silent = false } = {}) {
+      const x = {
+        id: U.uid('gx-'), at: e.at || Date.now(), category: e.category || 'Otros', description: e.description || '',
+        amount: Math.round(Number(e.amount) || 0), method: e.method || 'efectivo', supplier: e.supplier || '',
+        employeeId: e.employeeId || '', source: e.source || 'manual', cashMoveId: e.cashMoveId || '',
+        userId: PZ.auth.current ? PZ.auth.current.id : null, demo: !!e.demo,
+      };
+      S.data.expenses.unshift(x);
+      if (!silent) S.save();
+      return x;
+    },
+
+    /** Ingresos, costo de mercadería, gastos y resultado de la sucursal en un período */
+    profit(from, to) {
+      const orders = S.data.orders.filter((o) => o.paid && !o.voided && o.paidAt >= from && o.paidAt <= to);
+      const sales = orders.reduce((a, o) => a + o.total, 0);
+      const cogs = orders.reduce((a, o) => a + o.items.reduce((x, i) => x + (i.cost || 0) * i.qty, 0), 0);
+      const exps = S.data.expenses.filter((e) => e.at >= from && e.at <= to);
+      const byCat = {};
+      exps.forEach((e) => { byCat[e.category] = (byCat[e.category] || 0) + e.amount; });
+      const expenses = exps.reduce((a, e) => a + e.amount, 0);
+      return { orders, sales, cogs, expenses, byCat, exps, result: sales - expenses, margin: sales ? (sales - expenses) / sales : 0 };
+    },
+
+    /** Rendimiento de cada persona de la sucursal en un período */
+    employeeStats(from, to) {
+      const map = {};
+      const get = (id) => (map[id] = map[id] || { id, sales: 0, tickets: 0, discounts: 0, voids: 0, voidAmount: 0, closes: 0, absDiff: 0, diff: 0, salary: 0 });
+      S.data.orders.forEach((o) => {
+        if (o.paid && !o.voided && o.paidAt >= from && o.paidAt <= to) {
+          const r = get(o.paidBy || o.userId);
+          r.sales += o.total; r.tickets++; r.discounts += (o.discountAmount || 0) + (o.cashDiscount || 0);
+        }
+        if (o.voided && o.voidedAt >= from && o.voidedAt <= to && o.voidedBy) { const r = get(o.voidedBy); r.voids++; r.voidAmount += o.total; }
+      });
+      S.data.cashSessions.forEach((s) => {
+        if (s.closedAt && s.closedAt >= from && s.closedAt <= to && s.closedBy) { const r = get(s.closedBy); r.closes++; r.absDiff += Math.abs(s.diff || 0); r.diff += s.diff || 0; }
+      });
+      S.data.expenses.forEach((e) => { if (e.category === 'Sueldos' && e.employeeId && e.at >= from && e.at <= to) get(e.employeeId).salary += e.amount; });
+      return map;
     },
 
     /* =================== Stock (por sucursal) =================== */
@@ -675,14 +742,21 @@
     lowStock: () => S.data.ingredients.filter((i) => i.stock <= i.min),
 
     /* =================== Datos iniciales y demo =================== */
-    /** Si el negocio no tiene menú todavía, carga el de ejemplo */
-    seedIfEmpty({ customers = true } = {}) {
+    /**
+     * Sucursal sin menú: copia el menú modelo del negocio; si no hay modelo,
+     * carga el de ejemplo y lo guarda como modelo.
+     */
+    async seedIfEmpty({ customers = false, example = true } = {}) {
       let changed = false;
       if (!S.data.categories.length && PZ.auth.isAdmin()) {
-        const c = PZ.seed.catalog();
+        let model = null;
+        try { model = await PZ.cloud.menuModel(S.ctx.orgId); } catch (e) { /* sin conexión */ }
+        if ((!model || !(model.categories || []).length) && !example) return false;
+        const c = model && model.categories && model.categories.length ? JSON.parse(JSON.stringify(model)) : PZ.seed.catalog();
         S.data.categories = c.categories;
         S.data.products = c.products;
         S.data.extras = c.extras;
+        if (!(model && (model.categories || []).length) && PZ.auth.isOwner()) PZ.cloud.saveMenuModel(S.ctx.orgId, c).catch(() => {});
         if (customers && !S.data.customers.length) S.data.customers = PZ.seed.customers();
         changed = true;
       }
@@ -702,6 +776,7 @@
       S.data.orders = S.data.orders.filter((o) => !o.demo);
       S.data.cashSessions = S.data.cashSessions.filter((s) => !s.demo);
       S.data.cashMoves = S.data.cashMoves.filter((m) => !m.demo);
+      S.data.expenses = S.data.expenses.filter((x) => !x.demo);
       S.rebuildShadow();
       S.data.demo = false;
       S.log('sistema', 'Se borraron las ventas de demostración');

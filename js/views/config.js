@@ -8,7 +8,7 @@
 
   const TABS = [
     ['negocio', '🏪 Negocio'], ['ticket', '🧾 Ticket e impresora'], ['cobros', '💳 Cobros'], ['delivery', '🛵 Delivery'],
-    ['usuarios', '👤 Usuarios'], ['apariencia', '🎨 Apariencia'], ['sistema', '🛟 Respaldo y sistema'],
+    ['apariencia', '🎨 Apariencia'], ['sistema', '🛟 Respaldo y sistema'],
   ];
 
   function render(el) {
@@ -170,30 +170,6 @@
       b.querySelector('[data-a=addd]').onclick = () => { st.drivers.push('Nuevo repartidor'); save(); render(el); };
     },
 
-    usuarios(b, el) {
-      if (!PZ.auth.isAdmin()) { b.innerHTML = '<div class="card empty">Solo dueño o encargados</div>'; return; }
-      const R = PZ.auth.ROLES;
-      const branchLabel = (ids) => (!ids || !ids.length ? 'Todas' : ids.map((id) => S.branchName(id) || '?').join(', '));
-      const order = { owner: 0, admin: 1, cajero: 2, cocina: 3, delivery: 4 };
-      const users = S.data.users.slice().sort((x, y) => order[x.role] - order[y.role] || x.name.localeCompare(y.name));
-      b.innerHTML = `<div class="card">
-        <div class="row-flex space-between mb"><h3 style="margin:0">👤 Equipo de ${U.esc(S.ctx.org ? S.ctx.org.name : '')}</h3><button class="btn primary" data-a="new">➕ Nuevo usuario</button></div>
-        <div class="table-wrap"><table class="tbl"><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Sucursales</th><th>Último ingreso</th><th>Estado</th><th></th></tr></thead><tbody>
-          ${users.map((u) => `<tr><td><b>${U.esc(u.name)}</b>${u.id === PZ.auth.current.id ? ' <span class="badge pri">vos</span>' : ''}</td><td class="small">${U.esc(u.username)}</td><td>${R[u.role].label}</td>
-            <td class="small">${u.role === 'owner' ? 'Todas' : U.esc(branchLabel(u.branchIds))}</td>
-            <td class="small muted">${u.lastLogin ? U.dateTime(u.lastLogin) : '-'}</td>
-            <td><span class="badge ${u.active ? 'ok' : 'err'}">${u.active ? 'Activo' : 'Inactivo'}</span></td>
-            <td class="actions">${u.role !== 'owner' && (PZ.auth.isOwner() || u.role !== 'admin') ? `<button class="btn sm ghost" data-e="${u.id}">✏️</button>` : ''}</td></tr>`).join('')}
-        </tbody></table></div>
-        <div class="mt small muted">
-          <b>Roles:</b> Dueño = todo, todas las sucursales · Encargado = todo en sus sucursales (menú, precios, usuarios, reportes) · Cajero/a = vender, pedidos, caja, clientes, ventas y stock · Cocina y Delivery = solo el tablero de pedidos.<br>
-          Los empleados ingresan con su <b>usuario</b> (sin email). Anular ventas, cancelar pedidos y descuentos de más del 20% piden los datos de un encargado.
-        </div>
-      </div>`;
-      b.querySelector('[data-a=new]').onclick = () => editUser(null, () => render(el));
-      b.querySelectorAll('[data-e]').forEach((x) => x.onclick = () => editUser(S.user(x.dataset.e), () => render(el)));
-    },
-
     apariencia(b, el) {
       const theme = PZ.app.theme();
       b.innerHTML = `<div class="card"><h3>🍕 Elegí el sabor del sistema</h3>
@@ -245,80 +221,9 @@
         try { PZ.toast('Horneando ventas de ejemplo…', 'info'); const n = await PZ.seed.demoHistory(14); PZ.toast(`${n} ventas de demo cargadas`); } catch (e) { PZ.toast(e.message, 'err'); }
         render(el);
       });
-      on('menu', () => { S.seedIfEmpty({ customers: false }); PZ.toast('Menú de ejemplo cargado'); render(el); });
+      on('menu', async () => { await S.seedIfEmpty({ example: true }); PZ.toast('Menú cargado'); render(el); });
     },
   };
-
-  async function reloadMembers() {
-    const meta = await PZ.cloud.orgMeta(S.ctx.orgId);
-    S.ctx.members = meta.members;
-    S.ctx.branches = meta.branches;
-    S.afterLoad();
-  }
-
-  function editUser(u, done) {
-    const R = PZ.auth.ROLES;
-    const roles = Object.keys(R).filter((k) => k !== 'owner' && (k !== 'admin' || PZ.auth.isOwner()));
-    const all = !u || !u.branchIds.length;
-    const branches = PZ.app.allowedBranches();
-    const m = PZ.modal({
-      title: u ? '✏️ ' + U.esc(u.name) : '➕ Nuevo usuario',
-      body: `
-        <div class="grid-2">
-          <label class="field"><span>Nombre</span><input name="name" value="${U.esc(u ? u.name : '')}" autofocus></label>
-          <label class="field"><span>Usuario para ingresar</span><input name="username" value="${U.esc(u ? u.username : '')}" autocapitalize="off" ${u ? 'disabled' : 'placeholder="ej: caja.centro"'}></label>
-          <label class="field"><span>Rol</span><select name="role">${roles.map((k) => `<option value="${k}" ${u && u.role === k ? 'selected' : ''}>${R[k].label}</option>`).join('')}</select></label>
-          <label class="field"><span>${u ? 'Nueva contraseña (vacío = no cambiar)' : 'Contraseña (mínimo 6)'}</span><input name="pass" type="password" autocomplete="new-password"></label>
-        </div>
-        <div class="opt-section">Sucursales donde trabaja</div>
-        <label class="check"><input type="checkbox" name="all" ${all ? 'checked' : ''} ${PZ.auth.isOwner() ? '' : 'disabled'}> Todas las sucursales${PZ.auth.isOwner() ? '' : ' (solo el dueño)'}</label>
-        <div class="branch-checks ${all && PZ.auth.isOwner() ? 'hidden' : ''}">${branches.map((b) => `<label class="check"><input type="checkbox" name="br" value="${b.id}" ${u && u.branchIds.includes(b.id) ? 'checked' : !u && b.id === S.ctx.branchId ? 'checked' : ''}> ${U.esc(b.name)}</label>`).join('')}</div>
-        ${u ? `<label class="check mt"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Usuario activo (si lo desactivás no puede ingresar)</label>` : ''}`,
-      footer: `${u ? '<button class="btn danger" data-a="del">Quitar</button><span class="grow"></span>' : ''}<button class="btn ghost" data-a="x">Cancelar</button><button class="btn primary" data-a="ok">Guardar</button>`,
-    });
-    const E = m.el;
-    const v = (n) => E.querySelector(`[name=${n}]`).value.trim();
-    const allBox = E.querySelector('[name=all]');
-    allBox.onchange = () => E.querySelector('.branch-checks').classList.toggle('hidden', allBox.checked);
-    E.querySelector('[data-a=x]').onclick = () => m.close();
-    const del = E.querySelector('[data-a=del]');
-    if (del) del.onclick = async () => {
-      if (!(await PZ.confirm(`¿Quitar a ${U.esc(u.name)} del negocio? No va a poder ingresar más. Sus ventas se conservan.`, { danger: true, ok: 'Quitar' }))) return;
-      try { await PZ.cloud.staff('delete', { user_id: u.id }); await reloadMembers(); m.close(); PZ.toast('Usuario quitado'); done(); } catch (e) { PZ.toast(e.message, 'err'); }
-    };
-    E.querySelector('[data-a=ok]').onclick = async () => {
-      if (!navigator.onLine) return PZ.toast('Para gestionar usuarios hace falta conexión', 'warn');
-      const name = v('name');
-      const role = v('role');
-      const pass = E.querySelector('[name=pass]').value;
-      const branchIds = allBox.checked && PZ.auth.isOwner() ? [] : Array.from(E.querySelectorAll('[name=br]:checked')).map((x) => x.value);
-      if (!name) return PZ.toast('Falta el nombre', 'warn');
-      if (!(allBox.checked && PZ.auth.isOwner()) && !branchIds.length) return PZ.toast('Elegí al menos una sucursal', 'warn');
-      const btn = E.querySelector('[data-a=ok]');
-      btn.disabled = true;
-      try {
-        if (!u) {
-          if (pass.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres');
-          await PZ.cloud.staff('create', { name, username: v('username'), password: pass, role, branch_ids: branchIds });
-        } else {
-          const active = E.querySelector('[name=active]').checked;
-          const { error } = await PZ.cloud.sb.from('members').update({ name, role, branch_ids: branchIds, active }).eq('org_id', S.ctx.orgId).eq('user_id', u.id);
-          if (error) throw error;
-          if (pass) await PZ.cloud.staff('password', { user_id: u.id, password: pass });
-        }
-        await reloadMembers();
-        S.log('usuarios', `${u ? 'Edición' : 'Alta'} de ${name}`);
-        S.save();
-        m.close();
-        PZ.toast(u ? 'Usuario actualizado' : `Usuario creado. Ingresa con “${v('username').toLowerCase()}”`, 'ok', 4000);
-        done();
-      } catch (e) {
-        PZ.toast(e.message || 'No se pudo guardar', 'err', 5000);
-      } finally {
-        btn.disabled = false;
-      }
-    };
-  }
 
   PZ.views.config = { title: 'Configuración', render };
 })(window.PZ);

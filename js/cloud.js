@@ -57,19 +57,20 @@
       if (error) throw new Error(error.message);
     },
 
-    async register(payload) {
-      const res = await fetch(`${CFG.supabaseUrl}/functions/v1/register`, {
+    /** Canje de código de sucursal (público). check=true solo valida. */
+    async join(payload) {
+      const res = await fetch(`${CFG.supabaseUrl}/functions/v1/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: CFG.supabaseKey, Authorization: `Bearer ${CFG.supabaseKey}` },
         body: JSON.stringify(payload),
       });
       const out = await res.json().catch(() => ({}));
-      if (!res.ok || out.error) throw new Error(out.error || 'No se pudo crear la cuenta');
+      if (!res.ok || out.error) throw new Error(out.error || 'No se pudo usar el código');
       return out;
     },
 
-    async staff(action, body) {
-      const { data, error } = await sb.functions.invoke('staff', { body: { action, org_id: PZ.store.ctx.orgId, ...body } });
+    async invoke(fn, body) {
+      const { data, error } = await sb.functions.invoke(fn, { body });
       if (error) {
         let msg = error.message;
         try { const j = await error.context.json(); if (j.error) msg = j.error; } catch (e) { /* noop */ }
@@ -79,13 +80,103 @@
       return data;
     },
 
+    staff(action, body) { return C.invoke('staff', { action, org_id: PZ.store.ctx.orgId, ...body }); },
+    platform(action, body) { return C.invoke('platform', { action, ...body }); },
+
+    async isPlatformAdmin() {
+      const s = await C.session();
+      if (!s) return false;
+      const { data } = await sb.from('platform_admins').select('user_id').eq('user_id', s.user.id).maybeSingle();
+      return !!data;
+    },
+
+    async platformOrgs() {
+      const { data, error } = await sb.rpc('platform_orgs');
+      if (error) throw error;
+      return data || [];
+    },
+
+    async updateOrg(orgId, patch) {
+      const { error } = await sb.from('organizations').update(patch).eq('id', orgId);
+      if (error) throw error;
+    },
+
+    /* ---------------- Invitaciones ---------------- */
+    async createInvite(branchId, role, days = 7, note = '') {
+      const { data, error } = await sb.rpc('create_invite', { p_branch: branchId, p_role: role, p_days: days, p_note: note });
+      if (error) throw error;
+      return data;
+    },
+    async invites(orgId) {
+      const { data, error } = await sb.from('invites').select('*').eq('org_id', orgId).order('created_at', { ascending: false }).limit(100);
+      if (error) throw error;
+      return data || [];
+    },
+    async revokeInvite(code) {
+      const { error } = await sb.from('invites').update({ revoked: true }).eq('code', code);
+      if (error) throw error;
+    },
+
+    /* ---------------- Menú modelo y menú de sucursales ---------------- */
+    async menuModel(orgId) {
+      const { data } = await sb.from('docs').select('data').eq('org_id', orgId).eq('col', 'menu_model').eq('id', 'model').maybeSingle();
+      return data ? data.data : null;
+    },
+    async saveMenuModel(orgId, model) {
+      await C.upsertDocs([{ org_id: orgId, col: 'menu_model', id: 'model', branch_id: '', data: { ...model, updatedAt: Date.now() } }]);
+    },
+    async branchMenu(orgId, branchId) {
+      const { data, error } = await sb.from('docs').select('col, id, data').eq('org_id', orgId).eq('branch_id', branchId).in('col', ['category', 'product', 'extra']);
+      if (error) throw error;
+      const out = { categories: [], products: [], extras: [] };
+      const key = { category: 'categories', product: 'products', extra: 'extras' };
+      (data || []).forEach((r) => out[key[r.col]].push({ ...r.data, id: r.id.slice(r.id.indexOf('/') + 1) }));
+      Object.values(out).forEach((a) => a.sort((x, y) => (x._i ?? 0) - (y._i ?? 0)));
+      return out;
+    },
+    /** Escribe un menú completo en una sucursal. replace=true borra lo que no esté en el menú nuevo. */
+    async writeBranchMenu(orgId, branchId, menu, { replace = false } = {}) {
+      const rows = [];
+      const push = (col, arr) => arr.forEach((x, i) => rows.push({ org_id: orgId, col, id: `${branchId}/${x.id}`, branch_id: branchId, data: { ...x, _i: i } }));
+      push('category', menu.categories || []);
+      push('product', menu.products || []);
+      push('extra', menu.extras || []);
+      if (replace) {
+        const cur = await C.branchMenu(orgId, branchId);
+        const keep = new Set(rows.map((r) => r.col + ':' + r.id));
+        const colOf = { categories: 'category', products: 'product', extras: 'extra' };
+        for (const [k, arr] of Object.entries(cur)) {
+          for (const x of arr) {
+            if (!keep.has(colOf[k] + ':' + `${branchId}/${x.id}`)) await C.deleteDoc(orgId, colOf[k], `${branchId}/${x.id}`);
+          }
+        }
+      }
+      await C.upsertDocs(rows);
+    },
+
+    async finance(orgId, from, to) {
+      const { data, error } = await sb.rpc('org_finance', { p_org: orgId, p_from: new Date(from).toISOString(), p_to: new Date(to).toISOString() });
+      if (error) throw error;
+      return data;
+    },
+
+    /** Tiempo real a nivel negocio (panel del dueño) */
+    subscribeOrg(orgId, onEvent) {
+      C.unsubscribe();
+      C.channel = sb.channel(`org-panel-${orgId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `org_id=eq.${orgId}` }, () => onEvent('orders'))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'branches', filter: `org_id=eq.${orgId}` }, () => onEvent('branches'))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'members', filter: `org_id=eq.${orgId}` }, () => onEvent('members'))
+        .subscribe((status) => { C.realtime = status; PZ.store && PZ.store.emitStatus(); });
+    },
+
     /* ---------------- Lectura ---------------- */
     async memberships() {
       const s = await C.session();
       if (!s) return [];
-      const { data, error } = await sb.from('members').select('*, organizations(id, name, owner_id)').eq('user_id', s.user.id).eq('active', true);
+      const { data, error } = await sb.from('members').select('*, organizations(id, name, owner_id, status, features)').eq('user_id', s.user.id).eq('active', true);
       if (error) throw error;
-      return data || [];
+      return (data || []).filter((m) => m.organizations);
     },
 
     async orgMeta(orgId) {
@@ -114,7 +205,7 @@
         return out;
       };
       const [docs, orders, active, branch] = await Promise.all([
-        all(() => sb.from('docs').select('col, id, branch_id, data').eq('org_id', orgId).or(`branch_id.is.null,branch_id.eq.${branchId}`).order('col').order('id')),
+        all(() => sb.from('docs').select('col, id, branch_id, data').eq('org_id', orgId).eq('branch_id', branchId).order('col').order('id')),
         all(() => sb.from('orders').select('id, data').eq('branch_id', branchId).gte('created_at', since).order('created_at')),
         sb.from('orders').select('id, data').eq('branch_id', branchId).lt('created_at', since).not('status', 'in', '(entregado,cancelado)').eq('voided', false),
         sb.from('branches').select('*').eq('id', branchId).single(),

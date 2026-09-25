@@ -1,115 +1,72 @@
-# 🍕 Pizzería — Sistema de gestión multi-sucursal
+# 🍕 Pizzería — Sistema de gestión para cadenas y locales
 
-Sistema web para pizzerías con una o varias sucursales. Anda en celular, tablet o compu, se instala como app, **guarda todo en la nube** (Supabase) y **sigue funcionando sin internet**: sincroniza solo cuando vuelve la conexión.
+Sistema web (instalable como app) para pizzerías de uno o muchos locales. Datos en la nube (Supabase), funciona sin internet y se adapta a celular, tablet y compu.
 
-## Qué hace
+## Tres niveles, una sola sesión
 
-| Módulo | Qué incluye |
-|---|---|
-| **🧾 Tickets** | Comprobante de pago profesional (efectivo, transferencia, QR, tarjeta): logo, sucursal, número `0001-00000001`, detalle, vuelto, sello PAGADO, QR y leyenda "no válido como factura". 58 u 80 mm. Comanda de cocina. Impresión por navegador/PDF, Bluetooth directo o RawBT. |
-| **🍕 Vender** | Punto de venta táctil, mitad y mitad, tamaños, agregados, mostrador, delivery, para retirar y mesa. |
-| **💸 Cobro** | Vuelto automático, alias/CBU para copiar, QR de Mercado Pago, tarjeta, pago mixto, descuento por efectivo y recargo por tarjeta. |
-| **🔥 Pedidos** | Tablero en vivo **compartido entre equipos**: la caja carga un pedido y aparece al instante en la tablet de cocina. |
-| **💰 Caja** | Apertura, ingresos/retiros, arqueo, cierre Z con conteo de billetes. Una caja por sucursal. |
-| **🏢 Sucursales** | Panel del dueño: ventas de cada sucursal, comparación, ventas por día apiladas, medios de pago, productos top y horarios pico **de todo el negocio**. Estado en vivo (caja abierta, pedidos en curso). Alta y edición de sucursales. |
-| **👥 Clientes** | Compartidos entre sucursales, con historial y "repetir pedido". |
-| **📋 Menú** | Compartido por todas las sucursales, con aumento masivo de precios y carta imprimible. |
-| **📦 Stock** | Por sucursal, con descuento automático por receta. |
-| **📈 Reportes** | De la sucursal activa, más CSV para Excel. |
-| **⚙️ Config** | Por sucursal: datos del ticket, impresora, cobros, zonas. Usuarios con rol y sucursales asignadas. |
-
-## Cómo se organiza la información
-
-```
-Negocio (organización)          ← tiene un dueño
- ├─ Menú, precios, agregados    ← compartido
- ├─ Clientes                    ← compartido
- ├─ Usuarios (rol + sucursales asignadas)
- └─ Sucursales
-     ├─ Configuración (ticket, cobros, zonas de envío)
-     ├─ Pedidos y ventas
-     ├─ Caja
-     └─ Stock
-```
-
-| Rol | Puede |
-|---|---|
-| **Dueño/a** | Todo, en todas las sucursales. Crea sucursales y encargados. |
-| **Encargado/a** | Todo en sus sucursales (menú, precios, usuarios, reportes, estadísticas). |
-| **Cajero/a** | Vender, pedidos, caja, clientes, historial y stock de su sucursal. |
-| **Cocina / Delivery** | Solo el tablero de pedidos. |
-
-Los permisos se aplican **en la base de datos** (Row Level Security de Postgres), no solo en la pantalla: un cajero de una sucursal no puede leer ni modificar datos de otra aunque manipule la app.
-
-## Acceso de demostración
-
-| Usuario | Contraseña | Rol |
+| Nivel | Quién | Qué hace |
 |---|---|---|
-| `demo@pizzeriadiego.app` | `Pizza2026` | Dueño (sucursales Centro y Palermo, con ventas de ejemplo) |
-| `caja.palermo` | `caja1234` | Cajero, solo Palermo |
+| **🛠️ Plataforma** | El creador del sistema | Crea negocios a medida (dueño, módulos, máximo de sucursales), los suspende o reactiva, resetea contraseñas y entra a dar soporte. |
+| **🏢 Negocio** | El dueño | Panel general: resumen en vivo de todas las sucursales, alertas, **finanzas** (ventas, gastos, ganancia, margen, food cost), **equipo** (rendimiento de cada persona), sucursales, códigos y menú modelo. Con un toque **opera cualquier sucursal** sin cerrar sesión. |
+| **🏪 Sucursal** | Encargado y empleados | La operación: vender, cobrar, tickets, pedidos, caja, clientes, stock, gastos y ganancias, equipo y reportes. Todo propio de esa sucursal. |
 
-Los empleados ingresan con **usuario** (sin email). El dueño se registra con su email desde "Creá tu cuenta".
+Un negocio de una sola persona funciona igual: el dueño tiene todas las funciones. Si crece, agrega sucursales y empleados sin cambiar nada.
 
-> ⚠️ Antes de producción: cambiar esas contraseñas, borrar las ventas de demo de cada sucursal (Configuración → Respaldo y sistema) y definir `REGISTRATION_CODE` (ver más abajo).
+## Cómo se suma la gente
+
+1. **Vos** (plataforma) creás el negocio y el usuario del dueño → le mandás los datos por WhatsApp desde el mismo panel.
+2. **El dueño** crea sucursales y genera un **código** para el encargado de cada una (`ABCD-1234`, un solo uso, vence en 7 días).
+3. **El encargado** entra a la página → *Tengo un código de sucursal* → elige su usuario y contraseña. Queda solo en su sucursal.
+4. **El encargado** genera códigos para cajeros, cocina y delivery, o les crea el usuario directamente.
+
+## Qué ve el dueño
+
+- **Resumen:** vendido hoy en todas las sucursales, cajas abiertas, pedidos en curso, alertas (faltantes de stock, diferencias de caja, sucursal que gasta más de lo que vende), comparativa, productos top y horarios pico.
+- **Finanzas:** por sucursal y total: ventas, gastos, ganancia, margen, food cost (costo teórico de mercadería según recetas), ventas vs gastos por día y en qué se gasta.
+- **Equipo:** por persona: cuánto cobró, tickets, ticket promedio, descuentos, anulaciones, diferencias en los cierres de caja que hizo, sueldo pagado y cuánto vende por cada $1 de sueldo.
+- **Menú modelo:** menú oficial del negocio que se copia a las sucursales nuevas; se puede mandar a las existentes (solo precios, agregar faltantes o reemplazar) y aumentar precios en varias sucursales a la vez.
+
+## Datos separados por sucursal
+
+Cada sucursal tiene su propio menú, precios, clientes, pedidos, caja, stock y gastos. Los permisos se aplican **en la base de datos** (Row Level Security): un encargado o cajero no puede ver ni tocar otra sucursal aunque manipule la app.
+
+## Accesos de demostración
+
+| Usuario | Contraseña | Nivel |
+|---|---|---|
+| `tomas` | *(la que te pasé, cambiala)* | Plataforma |
+| `demo@pizzeriadiego.app` | `Pizza2026` | Dueño de Pizzería Diego (Centro y Palermo) |
+| `sofia.centro` | `pizza1234` | Encargada de Centro |
+| `martin.centro` | `pizza1234` | Cajero de Centro |
+| `cocina.centro` | `pizza1234` | Cocina de Centro |
+| `julian.palermo` | `pizza1234` | Encargado de Palermo |
+| `ana.palermo` / `caja.palermo` | `pizza1234` / `caja1234` | Cajeros de Palermo |
+| `marcos.esquina` | `Esquina2026` | Dueño de "La Esquina Pizzas" (ejemplo de negocio de una persona, sin mesas ni gastos) |
+
+## Módulos por negocio
+
+Desde la plataforma se activan o desactivan por negocio: **Delivery, Mesas, Stock, Gastos y ganancias** y el **máximo de sucursales**. Un negocio suspendido no puede ingresar (sus datos se conservan).
 
 ## Sin internet
 
-- Cada equipo guarda una copia local de su sucursal (IndexedDB).
-- Los cambios se encolan y se envían apenas vuelve la conexión (indicador ☁️ arriba a la derecha).
-- Cada equipo reserva bloques de números de pedido y comprobante, así se puede vender offline sin repetir números entre cajas.
-- Si dos equipos cambian el mismo pedido (cocina lo pasa al horno mientras caja lo cobra), se combinan campo por campo: no se pisan.
-- Para el **primer** ingreso en un equipo hace falta internet.
+Cada equipo guarda una copia de su sucursal, encola los cambios y sincroniza al volver la conexión. Los números de pedido y comprobante se reservan por bloques para vender offline sin repetir. Si dos equipos cambian el mismo pedido, se combinan campo por campo.
 
 ## Publicarlo
 
-Es un sitio estático (HTML/CSS/JS, sin compilar). No hace falta una compu prendida: el hosting lo sirve 24/7 y la base está en Supabase.
-
-- **GitHub Pages**: Settings → Pages → rama `main`, carpeta raíz.
-- **Netlify Drop**: arrastrar la carpeta a https://app.netlify.com/drop.
-- **Vercel / Cloudflare Pages**: importar el repositorio.
-
-En el celular: abrir la URL en Chrome → ⋮ → **Instalar app**.
-
-### Cerrar el registro público
-
-Cualquiera con la URL puede crear un negocio nuevo (queda aislado de los demás). Para que solo se registre quien tenga un código, en Supabase → Edge Functions → Secrets agregar `REGISTRATION_CODE` y pasarle ese código a los clientes nuevos.
-
-## Probarlo local
-
-```bash
-python -m http.server 8765
-```
-
-## Backend (Supabase)
-
-- Proyecto `pizzeria-diego` (región São Paulo).
-- `supabase/migrations/`: tablas, políticas RLS y funciones (estadísticas, numeración, sincronización con merge).
-- `supabase/functions/register`: alta de negocio + dueño + primera sucursal.
-- `supabase/functions/staff`: alta, cambio de clave y baja de empleados (requiere dueño o encargado).
-- La clave de `js/config.js` es la *publishable key*: es pública por diseño; la seguridad la dan las políticas RLS.
+Sitio estático: GitHub Pages, Netlify o Vercel lo sirven 24/7 (no depende de ninguna compu prendida). En el celular: Chrome → ⋮ → *Instalar app*.
 
 ## Estructura
 
 ```
-index.html
-css/styles.css         estilos y temas por sabor
-css/responsive.css     adaptación a celular, tablet, notebook y pantallas grandes
-js/config.js           URL y clave pública de Supabase
-js/cloud.js            sesión, lectura/escritura, tiempo real, estadísticas
-js/store.js            datos de la sucursal + sincronización offline
-js/seed.js             menú de ejemplo y ventas de demo
-js/auth.js             roles y permisos
-js/ticket.js           tickets HTML + ESC/POS + Bluetooth + RawBT + WhatsApp
-js/app.js              ingreso, sucursales, navegación
-js/views/*.js          una pantalla por archivo (sucursales.js = panel del dueño)
-supabase/              migraciones y funciones del servidor
-sw.js                  modo sin conexión
+js/cloud.js            Supabase: sesión, datos, tiempo real, finanzas, códigos
+js/store.js            datos de la sucursal + sincronización offline + gastos
+js/auth.js             niveles, roles, permisos y módulos
+js/app.js              ingreso, códigos, cambio de nivel, navegación
+js/views/plataforma.js panel del creador
+js/views/negocio.js    panel del dueño (resumen, sucursales, finanzas, menú modelo)
+js/views/equipo.js     equipo, códigos y rendimiento (sucursal y negocio)
+js/views/gastos.js     gastos y ganancias de la sucursal
+js/views/*.js          operación de la sucursal
+supabase/migrations/   esquema, RLS y funciones SQL
+supabase/functions/    platform · join · staff · register (cerrado)
 ```
-
-## Ideas para seguir
-
-- Factura electrónica ARCA/AFIP desde el cobro.
-- Menú online con pedidos por WhatsApp que caen en el tablero.
-- QR dinámico de Mercado Pago con confirmación automática.
-- Precios distintos por sucursal (hoy el menú es compartido).
-- Programa de puntos.

@@ -1,0 +1,269 @@
+/* ==========================================================================
+   EQUIPO — personas, códigos de invitación y rendimiento
+     'equipo'   → dentro de una sucursal (encargado o dueño operando)
+     'n-equipo' → panel del negocio (todas las sucursales)
+   ========================================================================== */
+(function (PZ) {
+  const U = PZ.util;
+  const S = PZ.store;
+  const A = () => PZ.auth;
+  const RANGES = [['7d', '7 días'], ['30d', '30 días'], ['mes', 'Este mes'], ['mesant', 'Mes pasado']];
+  let range = '30d';
+  let orgBranch = '';
+
+  function bounds() {
+    const t = U.startOfDay().getTime();
+    const now = new Date();
+    if (range === '7d') return [t - 6 * 864e5, Date.now()];
+    if (range === 'mes') return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), Date.now()];
+    if (range === 'mesant') return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime() - 1];
+    return [t - 29 * 864e5, Date.now()];
+  }
+  const roleBadge = (r) => `<span class="badge ${r === 'owner' ? 'pri' : r === 'admin' ? 'warn' : ''}">${A().ROLES[r].label}</span>`;
+  const branchNames = (ids) => (!ids || !ids.length ? 'Todas' : ids.map((id) => S.branchName(id) || '?').join(', '));
+  const inBranch = (m, bid) => m.role === 'owner' || !(m.branch_ids || []).length || m.branch_ids.includes(bid);
+  const shareText = (code, inv) => `¡Hola! Te sumo al sistema de ${S.ctx.org ? S.ctx.org.name : 'la pizzería'} (sucursal ${S.branchName(inv.branch_id)}).\n\n1. Entrá a ${location.origin + location.pathname}\n2. Tocá "Tengo un código de sucursal"\n3. Ingresá el código: *${code}*\n\nVence el ${U.date(inv.expires_at)}.`;
+
+  /* =====================================================================
+     Códigos de invitación
+     ===================================================================== */
+  PZ.invites = {
+    /** Genera un código. Si no se indica rol, se elige en un modal. */
+    async create(branchId, role, done = () => {}) {
+      if (!role) {
+        const roles = ['cajero', 'cocina', 'delivery'].concat(A().isOwner() ? ['admin'] : []);
+        role = await new Promise((res) => {
+          let chosen = null;
+          const m = PZ.modal({
+            title: '🔑 Código para sumar a alguien',
+            size: 'sm',
+            body: `<p class="muted" style="margin-top:0">Sucursal <b>${U.esc(S.branchName(branchId))}</b>. ¿Qué va a hacer esta persona?</p>
+              <div class="pick-list">${roles.map((r) => `<button class="pick" data-r="${r}"><span class="pick-ico">${{ admin: '🧑‍💼', cajero: '💵', cocina: '👨‍🍳', delivery: '🛵' }[r]}</span><span><b>${A().ROLES[r].label}</b><small>${{ admin: 'Maneja toda la sucursal', cajero: 'Vende, cobra, caja y pedidos', cocina: 'Solo tablero de pedidos', delivery: 'Solo tablero de pedidos' }[r]}</small></span><span class="pick-go">→</span></button>`).join('')}</div>`,
+            onClose: () => res(chosen),
+          });
+          m.el.querySelectorAll('[data-r]').forEach((b) => b.onclick = () => { chosen = b.dataset.r; m.close(); });
+        });
+        if (!role) return;
+      }
+      if (!navigator.onLine) return PZ.toast('Hace falta conexión', 'warn');
+      let code;
+      try { code = await PZ.cloud.createInvite(branchId, role, 7); } catch (e) { return PZ.toast(e.message, 'err'); }
+      const inv = { code, branch_id: branchId, role, expires_at: new Date(Date.now() + 7 * 864e5).toISOString() };
+      PZ.invites.show(inv);
+      done();
+    },
+
+    show(inv) {
+      const text = shareText(inv.code, inv);
+      const m = PZ.modal({
+        title: '🔑 Código listo',
+        size: 'sm',
+        body: `<p class="muted" style="margin-top:0">Para sumar un/a <b>${A().ROLES[inv.role].label}</b> en <b>${U.esc(S.branchName(inv.branch_id))}</b>. Sirve una sola vez y vence el ${U.date(inv.expires_at)}.</p>
+          <div class="code-big">${U.esc(inv.code)}</div>
+          <p class="small muted">La persona entra a la página, toca <b>“Tengo un código de sucursal”</b>, lo ingresa y elige su usuario y contraseña.</p>`,
+        footer: '<button class="btn ghost" data-a="cp">📋 Copiar</button><button class="btn primary" data-a="wa">💬 Enviar por WhatsApp</button>',
+      });
+      m.el.querySelector('[data-a=cp]').onclick = async () => { try { await navigator.clipboard.writeText(text); PZ.toast('Copiado'); } catch (e) { PZ.toast(inv.code, 'info', 6000); } };
+      m.el.querySelector('[data-a=wa]').onclick = () => window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
+    },
+
+    async renderList(box, refresh, { branchId = '' } = {}) {
+      let list;
+      try { list = await PZ.cloud.invites(S.ctx.orgId); } catch (e) { box.innerHTML = `<div class="empty small">No se pudieron cargar los códigos</div>`; return; }
+      if (!box.isConnected) return;
+      list = list.filter((i) => !branchId || i.branch_id === branchId);
+      const now = Date.now();
+      const state = (i) => (i.revoked ? ['err', 'Anulado'] : i.used_at ? ['ok', 'Usado'] : new Date(i.expires_at) < now ? ['', 'Vencido'] : ['warn', 'Pendiente']);
+      if (!list.length) { box.innerHTML = '<div class="empty small">Todavía no generaste códigos</div>'; return; }
+      const member = (id) => S.ctx.members.find((m) => m.user_id === id);
+      box.innerHTML = `<div class="table-wrap"><table class="tbl"><thead><tr><th>Código</th><th>Sucursal</th><th>Rol</th><th>Estado</th><th>Vence / usado por</th><th></th></tr></thead><tbody>
+        ${list.slice(0, 30).map((i) => { const [c, l] = state(i); return `<tr>
+          <td><b class="mono">${U.esc(i.code)}</b></td><td>${U.esc(S.branchName(i.branch_id))}</td><td>${A().ROLES[i.role].label}</td>
+          <td><span class="badge ${c}">${l}</span></td>
+          <td class="small">${i.used_at ? U.esc((member(i.used_by) || {}).name || 'Alguien') + ' · ' + U.date(i.used_at) : U.date(i.expires_at)}</td>
+          <td class="actions">${l === 'Pendiente' ? `<button class="btn sm ghost" data-share="${i.code}">💬</button><button class="btn sm ghost" data-rev="${i.code}">Anular</button>` : ''}</td></tr>`; }).join('')}
+      </tbody></table></div>`;
+      box.querySelectorAll('[data-share]').forEach((b) => b.onclick = () => PZ.invites.show(list.find((i) => i.code === b.dataset.share)));
+      box.querySelectorAll('[data-rev]').forEach((b) => b.onclick = async () => {
+        if (!(await PZ.confirm(`¿Anular el código ${b.dataset.rev}? Ya no se va a poder usar.`, { danger: true, ok: 'Anular' }))) return;
+        try { await PZ.cloud.revokeInvite(b.dataset.rev); PZ.toast('Código anulado'); refresh(); } catch (e) { PZ.toast(e.message, 'err'); }
+      });
+    },
+  };
+
+  /* =====================================================================
+     Alta y edición de personas
+     ===================================================================== */
+  async function reloadMembers() {
+    const meta = await PZ.cloud.orgMeta(S.ctx.orgId);
+    S.ctx.members = meta.members;
+    S.ctx.branches = meta.branches;
+    if (S.data) S.afterLoad();
+  }
+
+  function editUser(u, done, { fixedBranch = '' } = {}) {
+    const R = A().ROLES;
+    const owner = A().isOwner();
+    const roles = Object.keys(R).filter((k) => k !== 'owner' && (k !== 'admin' || owner));
+    const branches = PZ.app.allowedBranches();
+    const ids = u ? u.branch_ids || [] : fixedBranch ? [fixedBranch] : [];
+    const all = u ? !ids.length : false;
+    const m = PZ.modal({
+      title: u ? '✏️ ' + U.esc(u.name) : '➕ Nueva persona',
+      body: `
+        <div class="grid-2">
+          <label class="field"><span>Nombre</span><input name="name" value="${U.esc(u ? u.name : '')}" autofocus></label>
+          <label class="field"><span>Usuario para ingresar</span><input name="username" value="${U.esc(u ? u.username : '')}" autocapitalize="off" ${u ? 'disabled' : 'placeholder="ej: sofia.centro"'}></label>
+          <label class="field"><span>Rol</span><select name="role">${roles.map((k) => `<option value="${k}" ${u && u.role === k ? 'selected' : !u && k === 'cajero' ? 'selected' : ''}>${R[k].label}</option>`).join('')}</select></label>
+          <label class="field"><span>${u ? 'Nueva contraseña (vacío = no cambiar)' : 'Contraseña (mínimo 6)'}</span><input name="pass" type="password" autocomplete="new-password"></label>
+        </div>
+        <div class="opt-section">Sucursales donde trabaja</div>
+        ${owner ? `<label class="check"><input type="checkbox" name="all" ${all ? 'checked' : ''}> Todas las sucursales</label>` : ''}
+        <div class="branch-checks ${all ? 'hidden' : ''}">${branches.map((b) => `<label class="check"><input type="checkbox" name="br" value="${b.id}" ${ids.includes(b.id) ? 'checked' : ''}> ${U.esc(b.name)}</label>`).join('')}</div>
+        ${u ? `<label class="check mt"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Activo (si lo desactivás no puede ingresar)</label>` : ''}`,
+      footer: `${u ? '<button class="btn danger" data-a="del">Quitar</button><span class="grow"></span>' : ''}<button class="btn ghost" data-a="x">Cancelar</button><button class="btn primary" data-a="ok">Guardar</button>`,
+    });
+    const E = m.el;
+    const v = (n) => E.querySelector(`[name=${n}]`).value.trim();
+    const allBox = E.querySelector('[name=all]');
+    if (allBox) allBox.onchange = () => E.querySelector('.branch-checks').classList.toggle('hidden', allBox.checked);
+    E.querySelector('[data-a=x]').onclick = () => m.close();
+    const del = E.querySelector('[data-a=del]');
+    if (del) del.onclick = async () => {
+      if (!(await PZ.confirm(`¿Quitar a ${U.esc(u.name)}? No va a poder ingresar más. Sus ventas quedan registradas.`, { danger: true, ok: 'Quitar' }))) return;
+      try { await PZ.cloud.staff('delete', { user_id: u.user_id }); await reloadMembers(); m.close(); PZ.toast('Quitado del equipo'); done(); } catch (e) { PZ.toast(e.message, 'err'); }
+    };
+    E.querySelector('[data-a=ok]').onclick = async () => {
+      if (!navigator.onLine) return PZ.toast('Hace falta conexión', 'warn');
+      const isAll = allBox && allBox.checked;
+      const branchIds = isAll ? [] : Array.from(E.querySelectorAll('[name=br]:checked')).map((x) => x.value);
+      if (!v('name')) return PZ.toast('Falta el nombre', 'warn');
+      if (!isAll && !branchIds.length) return PZ.toast('Elegí al menos una sucursal', 'warn');
+      const btn = E.querySelector('[data-a=ok]');
+      btn.disabled = true;
+      try {
+        const pass = E.querySelector('[name=pass]').value;
+        if (!u) {
+          if (pass.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres');
+          await PZ.cloud.staff('create', { name: v('name'), username: v('username'), password: pass, role: v('role'), branch_ids: branchIds });
+        } else {
+          const { error } = await PZ.cloud.sb.from('members').update({ name: v('name'), role: v('role'), branch_ids: branchIds, active: E.querySelector('[name=active]').checked }).eq('org_id', S.ctx.orgId).eq('user_id', u.user_id);
+          if (error) throw error;
+          if (pass) await PZ.cloud.staff('password', { user_id: u.user_id, password: pass });
+        }
+        await reloadMembers();
+        m.close();
+        PZ.toast(u ? 'Guardado' : `Listo. Ingresa con “${v('username').toLowerCase()}”`, 'ok', 4000);
+        done();
+      } catch (e) {
+        PZ.toast(e.message || 'No se pudo guardar', 'err', 5000);
+      } finally { btn.disabled = false; }
+    };
+  }
+
+  /* =====================================================================
+     Tabla de rendimiento
+     ===================================================================== */
+  function perfTable(people, stats) {
+    const rows = people.map((m) => ({ m, s: stats[m.user_id] || {} })).sort((a, b) => (b.s.sales || 0) - (a.s.sales || 0));
+    const top = rows[0] && rows[0].s.sales ? rows[0].m.user_id : null;
+    return `<div class="table-wrap"><table class="tbl"><thead><tr>
+      <th>Persona</th><th>Rol</th><th class="right">Cobró</th><th class="right">Tickets</th><th class="right">Ticket prom.</th>
+      <th class="right">Descuentos</th><th class="right">Anulaciones</th><th class="right">Dif. de caja</th><th class="right">Sueldo pagado</th><th class="right">Vende por $1 de sueldo</th><th></th></tr></thead><tbody>
+      ${rows.map(({ m, s }) => `<tr class="${m.active ? '' : 'voided'}">
+        <td><b>${m.user_id === top ? '🏆 ' : ''}${U.esc(m.name)}</b><div class="small muted">${U.esc(m.username)}${m.last_login ? ' · últ. ingreso ' + U.date(m.last_login) : ''}</div></td>
+        <td>${roleBadge(m.role)}</td>
+        <td class="right"><b>${U.money(s.sales || 0)}</b></td>
+        <td class="right">${s.tickets || 0}</td>
+        <td class="right">${U.money(s.tickets ? s.sales / s.tickets : 0)}</td>
+        <td class="right">${U.money(s.discounts || 0)}</td>
+        <td class="right">${s.voids ? `<span class="badge warn">${s.voids} · ${U.money(s.voidAmount || 0)}</span>` : '0'}</td>
+        <td class="right">${s.closes ? `<span class="badge ${s.absDiff ? 'err' : 'ok'}">${s.absDiff ? U.money(s.diff) : 'Sin dif.'}</span> <span class="small muted">${s.closes} cierre(s)</span>` : '—'}</td>
+        <td class="right">${s.salary ? U.money(s.salary) : '—'}</td>
+        <td class="right">${s.salary && s.sales ? '$' + U.num(Math.round((s.sales / s.salary) * 10) / 10) : '—'}</td>
+        <td class="actions">${m.role !== 'owner' && (A().isOwner() || m.role !== 'admin') && m.user_id !== A().current.id ? `<button class="btn sm ghost" data-e="${m.user_id}">✏️</button>` : ''}</td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
+  }
+
+  const help = `<p class="small muted"><b>Cobró</b>: ventas que esa persona cobró en el período. <b>Anulaciones</b>: ventas que anuló. <b>Dif. de caja</b>: suma de sobrantes y faltantes en los cierres que hizo. <b>Sueldo pagado</b>: gastos de categoría “Sueldos” asignados a esa persona (en Gastos y ganancias).</p>`;
+
+  /* ---------- Vista de sucursal ---------- */
+  function branchView(el) {
+    const bid = S.ctx.branchId;
+    const people = S.ctx.members.filter((m) => inBranch(m, bid));
+    const [from, to] = bounds();
+    const stats = S.employeeStats(from, to);
+    el.innerHTML = `
+      <div class="row-flex space-between mb">
+        <div class="seg">${RANGES.map(([k, l]) => `<button data-range="${k}" class="${range === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <div class="row-flex"><button class="btn primary" data-a="code">🔑 Generar código</button><button class="btn ghost" data-a="new">➕ Crear usuario</button></div>
+      </div>
+      <div class="card"><h3>🧑‍🍳 Equipo de ${U.esc(S.branchName())} <span class="badge">${people.length}</span></h3>${perfTable(people, stats)}${help}</div>
+      <div class="card mt"><h3>🔑 Códigos de esta sucursal</h3><div class="inv-list"><div class="empty small">Cargando…</div></div></div>`;
+    el.querySelectorAll('[data-range]').forEach((b) => b.onclick = () => { range = b.dataset.range; branchView(el); });
+    el.querySelector('[data-a=code]').onclick = () => PZ.invites.create(bid, null, () => branchView(el));
+    el.querySelector('[data-a=new]').onclick = () => editUser(null, () => branchView(el), { fixedBranch: bid });
+    el.querySelectorAll('[data-e]').forEach((b) => b.onclick = () => editUser(S.ctx.members.find((m) => m.user_id === b.dataset.e), () => branchView(el)));
+    PZ.invites.renderList(el.querySelector('.inv-list'), () => branchView(el), { branchId: bid });
+  }
+
+  /* ---------- Vista del negocio ---------- */
+  function orgView(el) {
+    const bs = S.ctx.branches;
+    el.innerHTML = `
+      <div class="row-flex space-between mb">
+        <div class="seg">${RANGES.map(([k, l]) => `<button data-range="${k}" class="${range === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <div class="row-flex">
+          <select class="org-branch" style="max-width:220px"><option value="">Todas las sucursales</option>${bs.map((b) => `<option value="${b.id}" ${orgBranch === b.id ? 'selected' : ''}>${U.esc(b.name)}</option>`).join('')}</select>
+          <button class="btn primary" data-a="code">🔑 Generar código</button><button class="btn ghost" data-a="new">➕ Crear usuario</button>
+        </div>
+      </div>
+      <div class="e-body"><div class="card empty"><span class="e-ico">🍕</span>Calculando el rendimiento del equipo…</div></div>
+      <div class="card mt"><h3>🔑 Códigos generados</h3><div class="inv-list"><div class="empty small">Cargando…</div></div></div>`;
+    el.querySelectorAll('[data-range]').forEach((b) => b.onclick = () => { range = b.dataset.range; orgView(el); });
+    el.querySelector('.org-branch').onchange = (e) => { orgBranch = e.target.value; orgView(el); };
+    el.querySelector('[data-a=code]').onclick = async () => {
+      const bid = orgBranch || (bs.filter((b) => b.active).length === 1 ? bs.find((b) => b.active).id : await pickOne());
+      if (bid) PZ.invites.create(bid, null, () => orgView(el));
+    };
+    el.querySelector('[data-a=new]').onclick = () => editUser(null, () => orgView(el), { fixedBranch: orgBranch });
+    PZ.invites.renderList(el.querySelector('.inv-list'), () => orgView(el), { branchId: orgBranch });
+    loadOrg(el);
+  }
+
+  function pickOne() {
+    return new Promise((res) => {
+      let chosen = null;
+      const m = PZ.modal({
+        title: '¿Para qué sucursal?', size: 'sm',
+        body: `<div class="pick-list">${S.ctx.branches.filter((b) => b.active).map((b) => `<button class="pick" data-id="${b.id}"><span class="pick-ico">🏪</span><span><b>${U.esc(b.name)}</b></span><span class="pick-go">→</span></button>`).join('')}</div>`,
+        onClose: () => res(chosen),
+      });
+      m.el.querySelectorAll('.pick').forEach((b) => b.onclick = () => { chosen = b.dataset.id; m.close(); });
+    });
+  }
+
+  async function loadOrg(el) {
+    const box = el.querySelector('.e-body');
+    if (!navigator.onLine) { box.innerHTML = '<div class="card empty">Necesita conexión</div>'; return; }
+    const [from, to] = bounds();
+    let fin;
+    try { fin = await PZ.cloud.finance(S.ctx.orgId, from, to); } catch (e) { box.innerHTML = `<div class="card empty">${U.esc(e.message)}</div>`; return; }
+    if (!el.isConnected) return;
+    const stats = {};
+    const get = (id) => (stats[id] = stats[id] || { sales: 0, tickets: 0, discounts: 0, voids: 0, voidAmount: 0, closes: 0, absDiff: 0, diff: 0, salary: 0 });
+    (fin.by_employee || []).filter((r) => !orgBranch || r.branch_id === orgBranch).forEach((r) => { if (!r.user_id) return; const s = get(r.user_id); s.sales += Number(r.sales); s.tickets += Number(r.tickets); s.discounts += Number(r.discounts); });
+    (fin.voids || []).forEach((r) => { if (r.user_id) { const s = get(r.user_id); s.voids += Number(r.voids); s.voidAmount += Number(r.amount); } });
+    (fin.salaries || []).forEach((r) => { if (r.user_id) get(r.user_id).salary += Number(r.amount); });
+    (fin.cash_closes || []).forEach((r) => { if (r.user_id) { const s = get(r.user_id); s.closes += Number(r.closes); s.absDiff += Number(r.abs_diff); s.diff += Number(r.diff); } });
+    const people = S.ctx.members.filter((m) => !orgBranch || inBranch(m, orgBranch));
+    box.innerHTML = `<div class="card"><h3>🧑‍🍳 ${orgBranch ? 'Equipo de ' + U.esc(S.branchName(orgBranch)) : 'Todo el equipo'} <span class="badge">${people.length}</span></h3>
+      ${perfTable(people, stats)}
+      <p class="small muted"><b>Sucursales:</b> ${people.map((m) => `${U.esc(m.name)} → ${U.esc(m.role === 'owner' ? 'Todas' : branchNames(m.branch_ids))}`).join(' · ')}</p>${help}</div>`;
+    box.querySelectorAll('[data-e]').forEach((b) => b.onclick = () => editUser(S.ctx.members.find((m) => m.user_id === b.dataset.e), () => orgView(el)));
+  }
+
+  PZ.views.equipo = { title: 'Equipo de la sucursal', render: branchView };
+  PZ.views['n-equipo'] = { title: 'Equipo', render: orgView };
+})(window.PZ);

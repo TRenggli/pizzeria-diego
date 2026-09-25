@@ -1,5 +1,10 @@
 /* ==========================================================================
-   PZ.app — arranque, ingreso/registro, selección de sucursal y navegación
+   PZ.app — ingreso, niveles y navegación
+
+   Tres niveles, todos con la misma sesión (sin cerrar e iniciar):
+     platform → el creador del sistema: todos los negocios
+     org      → el dueño: panel del negocio (todas sus sucursales)
+     branch   → operación de UNA sucursal (lo que usan encargados y empleados)
    ========================================================================== */
 (function (PZ) {
   const U = PZ.util;
@@ -16,19 +21,39 @@
     { id: 'horno', name: 'Horno de barro', desc: 'Modo oscuro, brasas', sw: ['#17110e', '#ff6b35', '#ffb347'] },
   ];
 
-  const NAV = [
-    { id: 'inicio', label: 'Inicio', icon: '🏠' },
-    { id: 'vender', label: 'Vender', icon: '🍕' },
-    { id: 'pedidos', label: 'Pedidos', icon: '🔥' },
-    { id: 'caja', label: 'Caja', icon: '💰' },
-    { id: 'sucursales', label: 'Sucursales', icon: '🏢' },
-    { id: 'historial', label: 'Ventas', icon: '🧾' },
-    { id: 'clientes', label: 'Clientes', icon: '👥' },
-    { id: 'menu', label: 'Menú y precios', icon: '📋' },
-    { id: 'stock', label: 'Stock', icon: '📦' },
-    { id: 'reportes', label: 'Reportes', icon: '📈' },
-    { id: 'config', label: 'Configuración', icon: '⚙️' },
-  ];
+  const NAV = {
+    branch: [
+      { id: 'inicio', label: 'Inicio', icon: '🏠' },
+      { id: 'vender', label: 'Vender', icon: '🍕' },
+      { id: 'pedidos', label: 'Pedidos', icon: '🔥' },
+      { id: 'caja', label: 'Caja', icon: '💰' },
+      { id: 'historial', label: 'Ventas', icon: '🧾' },
+      { id: 'clientes', label: 'Clientes', icon: '👥' },
+      { id: 'menu', label: 'Menú y precios', icon: '📋' },
+      { id: 'stock', label: 'Stock', icon: '📦' },
+      { id: 'gastos', label: 'Gastos y ganancias', icon: '💸' },
+      { id: 'equipo', label: 'Equipo', icon: '🧑‍🍳' },
+      { id: 'reportes', label: 'Reportes', icon: '📈' },
+      { id: 'config', label: 'Configuración', icon: '⚙️' },
+    ],
+    org: [
+      { id: 'n-resumen', label: 'Resumen', icon: '📊' },
+      { id: 'n-sucursales', label: 'Sucursales', icon: '🏪' },
+      { id: 'n-finanzas', label: 'Finanzas', icon: '💹' },
+      { id: 'n-equipo', label: 'Equipo', icon: '🧑‍🍳' },
+      { id: 'n-menu', label: 'Menú modelo', icon: '📋' },
+      { id: 'n-config', label: 'Negocio', icon: '⚙️' },
+    ],
+    platform: [
+      { id: 'p-negocios', label: 'Negocios', icon: '🛠️' },
+    ],
+  };
+  const BOTTOM = {
+    branch: ['inicio', 'vender', 'pedidos', 'caja'],
+    org: ['n-resumen', 'n-sucursales', 'n-finanzas', 'n-equipo'],
+    platform: ['p-negocios'],
+  };
+  const modeOf = (id) => (id.startsWith('p-') ? 'platform' : id.startsWith('n-') ? 'org' : 'branch');
 
   let cleanup = null;
   let clockTimer = null;
@@ -36,7 +61,10 @@
   const flavorDots = (current) => PZ.themes.map((t) => `<button type="button" class="flavor-dot ${t.id === current ? 'on' : ''}" data-t="${t.id}" title="${t.name}" aria-label="Tema ${t.name}" style="background:conic-gradient(${t.sw[0]} 0 50%, ${t.sw[1]} 50% 80%, ${t.sw[2]} 80%)"></button>`).join('');
 
   const App = (PZ.app = {
-    /* ===================== Tema (por dispositivo) ===================== */
+    mode: null,
+    currentView: null,
+
+    /* ===================== Tema (por equipo) ===================== */
     theme: () => localStorage.getItem('pz-theme') || 'margherita',
     applyTheme(id) {
       const t = id || App.theme();
@@ -70,104 +98,193 @@
     },
 
     /* ===================== INGRESO ===================== */
-    renderLogin(mode = 'login', errMsg = '') {
+    renderLogin(errMsg = '') {
       clearInterval(clockTimer);
-      const isReg = mode === 'register';
       root().innerHTML = `
         <div class="login">
           <div class="floaters">${App.floaters()}</div>
-          <form class="login-card ${isReg ? 'wide' : ''}" autocomplete="on" novalidate>
+          <form class="login-card" autocomplete="on" novalidate>
             <div class="login-logo">${PZ.brandLogo(96)}</div>
-            <h1>${isReg ? 'Creá tu pizzería' : 'Pizzería'}</h1>
-            <p class="tag">${isReg ? 'Un negocio, todas tus sucursales, todo sincronizado' : 'Sistema de gestión · ¡a hornear!'}</p>
+            <h1>Pizzería</h1>
+            <p class="tag">Sistema de gestión · ¡a hornear!</p>
             <div class="err-msg ${errMsg ? '' : 'hidden'}">${U.esc(errMsg)}</div>
-            ${isReg ? `
-              <div class="grid-2">
-                <label class="field"><span>Nombre del negocio</span><input name="org" required placeholder="Pizzería Diego" autofocus></label>
-                <label class="field"><span>Primera sucursal</span><input name="branch" value="Casa central"></label>
-                <label class="field"><span>Tu nombre</span><input name="name" autocomplete="name" required></label>
-                <label class="field"><span>Email</span><input name="email" type="email" autocomplete="email" required></label>
-              </div>
-              <label class="field"><span>Contraseña (mínimo 8)</span><input name="pass" type="password" autocomplete="new-password" required minlength="8"></label>
-              <label class="check"><input type="checkbox" name="menu" checked> Cargar menú de ejemplo (lo editás después)</label>
-              <label class="check"><input type="checkbox" name="demo" checked> Cargar 2 semanas de ventas de demostración</label>
-              <button class="btn primary lg block mt" type="submit">Crear mi cuenta 🍕</button>
-              <p class="center small mt"><a href="#" data-a="login">Ya tengo cuenta, ingresar</a></p>`
-            : `
-              <label class="field"><span>Usuario o email</span><input name="user" autocomplete="username" autocapitalize="off" required autofocus></label>
-              <label class="field"><span>Contraseña</span><input name="pass" type="password" autocomplete="current-password" required></label>
-              <button class="btn primary lg block mt" type="submit">Ingresar 🍕</button>
-              <p class="center small mt">¿Tenés una pizzería? <a href="#" data-a="register">Creá tu cuenta gratis</a></p>`}
+            <label class="field"><span>Usuario o email</span><input name="user" autocomplete="username" autocapitalize="off" required autofocus></label>
+            <label class="field"><span>Contraseña</span><input name="pass" type="password" autocomplete="current-password" required></label>
+            <button class="btn primary lg block mt" type="submit">Ingresar 🍕</button>
+            <button class="btn ghost block mt" type="button" data-a="code">🔑 Tengo un código de sucursal</button>
             <div class="flavor-dots" title="Elegí el sabor del sistema">${flavorDots(App.theme())}</div>
             ${navigator.onLine ? '' : '<div class="demo-hint">📴 Sin conexión. Si ya ingresaste antes en este equipo, tu sesión sigue activa.</div>'}
           </form>
         </div>`;
       const form = root().querySelector('form');
-      const err = root().querySelector('.err-msg');
-      const showErr = (m) => { err.textContent = m; err.classList.remove('hidden'); err.style.animation = 'none'; void err.offsetWidth; err.style.animation = ''; };
+      const err = form.querySelector('.err-msg');
       App.bindFlavors(form);
-      form.querySelectorAll('[data-a]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); App.renderLogin(a.dataset.a); }));
+      form.querySelector('[data-a=code]').onclick = () => App.renderJoin();
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         err.classList.add('hidden');
         const btn = form.querySelector('button[type=submit]');
         btn.disabled = true;
-        const label = btn.textContent;
         btn.textContent = 'Un momento…';
         try {
-          if (isReg) {
-            const f = form.elements;
-            if (!f.org.value.trim() || !f.name.value.trim() || !f.email.value.trim()) throw new Error('Completá todos los campos');
-            if (f.pass.value.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres');
-            await PZ.cloud.register({
-              orgName: f.org.value.trim(), branchName: f.branch.value.trim() || 'Casa central', name: f.name.value.trim(),
-              email: f.email.value.trim(), password: f.pass.value, settings: PZ.seed.settings(f.org.value.trim(), f.branch.value.trim()),
-            });
-            sessionStorage.setItem('pz-onboard', JSON.stringify({ menu: f.menu.checked, demo: f.demo.checked }));
-            await A.login(f.email.value, f.pass.value);
-          } else {
-            await A.login(form.elements.user.value, form.elements.pass.value);
-          }
+          await A.login(form.elements.user.value, form.elements.pass.value);
           localStorage.setItem('pz-memberships', JSON.stringify(A.memberships));
-          await App.enter(A.memberships);
+          localStorage.setItem('pz-platform', A.platform ? '1' : '');
+          await App.enter();
         } catch (ex) {
           console.error(ex);
-          showErr(ex.message || 'No se pudo ingresar');
-        } finally {
+          err.textContent = ex.message || 'No se pudo ingresar';
+          err.classList.remove('hidden');
           btn.disabled = false;
-          btn.textContent = label;
+          btn.textContent = 'Ingresar 🍕';
         }
       });
     },
 
-    /** Elegir negocio y sucursal y abrir el sistema */
-    async enter(memberships) {
-      let m = memberships.find((x) => x.org_id === localStorage.getItem('pz-org'));
-      if (!m && memberships.length === 1) m = memberships[0];
-      if (!m) m = await App.pick('¿Con qué negocio vas a trabajar?', memberships.map((x) => ({ id: x.org_id, title: x.organizations ? x.organizations.name : 'Negocio', sub: A.ROLES[x.role].label, icon: '🍕' })))
-        .then((id) => memberships.find((x) => x.org_id === id));
+    /** Alta con código: el encargado o empleado se suma solo */
+    renderJoin() {
+      root().innerHTML = `
+        <div class="login"><div class="floaters">${App.floaters()}</div>
+          <form class="login-card" novalidate>
+            <div class="login-logo">${PZ.brandLogo(96)}</div>
+            <h1 style="font-size:1.6em">Sumarme a una sucursal</h1>
+            <p class="tag">Ingresá el código que te pasó el dueño o el encargado</p>
+            <div class="err-msg hidden"></div>
+            <div class="step1">
+              <label class="field"><span>Código</span><input name="code" class="code-input" placeholder="ABCD-1234" autocapitalize="characters" autocomplete="off" maxlength="9" autofocus></label>
+              <button class="btn primary lg block" type="submit">Continuar →</button>
+            </div>
+            <div class="step2 hidden">
+              <div class="join-ok"></div>
+              <label class="field"><span>Tu nombre</span><input name="name" autocomplete="name"></label>
+              <label class="field"><span>Elegí un usuario (para ingresar)</span><input name="username" autocapitalize="off" autocomplete="username" placeholder="ej: lucas.palermo"></label>
+              <label class="field"><span>Contraseña (mínimo 6)</span><input name="pass" type="password" autocomplete="new-password"></label>
+              <button class="btn primary lg block" type="submit">Crear mi usuario 🍕</button>
+            </div>
+            <p class="center small mt"><a href="#" data-a="back">← Volver al ingreso</a></p>
+          </form></div>`;
+      const form = root().querySelector('form');
+      const err = form.querySelector('.err-msg');
+      const f = form.elements;
+      let step = 1;
+      f.code.addEventListener('input', () => {
+        let v = f.code.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+        if (v.length > 4) v = v.slice(0, 4) + '-' + v.slice(4);
+        f.code.value = v;
+      });
+      form.querySelector('[data-a=back]').onclick = (e) => { e.preventDefault(); App.renderLogin(); };
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        err.classList.add('hidden');
+        const btn = form.querySelector(step === 1 ? '.step1 button' : '.step2 button');
+        btn.disabled = true;
+        try {
+          if (step === 1) {
+            const info = await PZ.cloud.join({ code: f.code.value, check: true });
+            form.querySelector('.join-ok').innerHTML = `<div class="alert-row">✅ Te vas a sumar a <b>${U.esc(info.org)}</b> · sucursal <b>${U.esc(info.branch)}</b> como <b>${U.esc(A.ROLES[info.role].label)}</b></div>`;
+            form.querySelector('.step1').classList.add('hidden');
+            form.querySelector('.step2').classList.remove('hidden');
+            f.code.readOnly = true;
+            step = 2;
+            setTimeout(() => f.name.focus(), 50);
+          } else {
+            await PZ.cloud.join({ code: f.code.value, name: f.name.value, username: f.username.value, password: f.pass.value });
+            PZ.toast('¡Listo! Ya sos parte del equipo 🍕');
+            await A.login(f.username.value, f.pass.value);
+            localStorage.setItem('pz-memberships', JSON.stringify(A.memberships));
+            await App.enter();
+          }
+        } catch (ex) {
+          err.textContent = ex.message;
+          err.classList.remove('hidden');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    },
+
+    /** Decide a qué nivel entra el usuario después de ingresar */
+    async enter() {
+      if (A.platform) return App.openPlatform();
+      const list = A.memberships;
+      let m = list.find((x) => x.org_id === localStorage.getItem('pz-org'));
+      if (!m && list.length === 1) m = list[0];
+      if (!m) {
+        const id = await App.pick('¿Con qué negocio vas a trabajar?', list.map((x) => ({ id: x.org_id, title: x.organizations.name, sub: A.ROLES[x.role].label, icon: '🍕' })));
+        m = list.find((x) => x.org_id === id);
+      }
       A.use(m);
       localStorage.setItem('pz-org', m.org_id);
+      await App.loadOrg(m.org_id);
+      if (A.isOwner()) {
+        const last = localStorage.getItem('pz-mode-' + m.org_id);
+        const allowed = App.allowedBranches();
+        if (last === 'org' || (!last && allowed.length > 1)) return App.openOrg();
+      }
+      return App.openBranch(await App.chooseBranch());
+    },
 
+    /** Carga negocio, sucursales y equipo (con respaldo local si no hay internet) */
+    async loadOrg(orgId) {
       App.loading('Buscando tus sucursales…');
-      let branches = [];
+      S.ctx.orgId = orgId;
       try {
-        const meta = await PZ.cloud.orgMeta(m.org_id);
-        branches = meta.branches;
+        const meta = await PZ.cloud.orgMeta(orgId);
         S.ctx.org = meta.org;
         S.ctx.branches = meta.branches;
         S.ctx.members = meta.members;
-        localStorage.setItem('pz-branches-' + m.org_id, JSON.stringify(branches));
+        localStorage.setItem('pz-orgmeta-' + orgId, JSON.stringify(meta));
       } catch (e) {
-        try { branches = JSON.parse(localStorage.getItem('pz-branches-' + m.org_id)) || []; } catch (x) { branches = []; }
+        const meta = JSON.parse(localStorage.getItem('pz-orgmeta-' + orgId) || 'null');
+        if (!meta) throw e;
+        S.ctx.org = meta.org;
+        S.ctx.branches = meta.branches;
+        S.ctx.members = meta.members;
       }
-      const allowed = branches.filter((b) => b.active && (m.role === 'owner' || !(m.branch_ids || []).length || m.branch_ids.includes(b.id)));
+    },
+
+    allowedBranches() {
+      const u = A.current;
+      if (!u) return [];
+      return S.ctx.branches.filter((b) => b.active && (u.role === 'owner' || !u.branchIds.length || u.branchIds.includes(b.id)));
+    },
+
+    async chooseBranch() {
+      const allowed = App.allowedBranches();
       if (!allowed.length) throw new Error('No tenés sucursales asignadas. Hablá con el dueño.');
-      let branchId = localStorage.getItem('pz-branch-' + m.org_id);
-      if (!allowed.some((b) => b.id === branchId)) {
-        branchId = allowed.length === 1 ? allowed[0].id : await App.pick('¿En qué sucursal estás hoy?', allowed.map((b) => ({ id: b.id, title: b.name, sub: (b.settings && b.settings.business && b.settings.business.address) || '', icon: '🏪' })));
-      }
-      await App.openBranch(branchId);
+      const last = localStorage.getItem('pz-branch-' + A.current.orgId);
+      if (allowed.some((b) => b.id === last)) return last;
+      if (allowed.length === 1) return allowed[0].id;
+      return App.pick('¿En qué sucursal vas a trabajar?', allowed.map((b) => ({ id: b.id, title: b.name, sub: (b.settings && b.settings.business && b.settings.business.address) || '', icon: '🏪' })));
+    },
+
+    /* ---------- Cambiar de nivel (sin cerrar sesión) ---------- */
+    async openPlatform() {
+      await App.leaveBranch();
+      A.current = null;
+      App.mode = 'platform';
+      PZ.cloud.unsubscribe();
+      App.renderShell();
+      App.go('p-negocios');
+      App.route();
+    },
+
+    /** Soporte: la plataforma entra al panel de un negocio */
+    async supportOrg(org) {
+      A.useSupport(org);
+      await App.loadOrg(org.id);
+      return App.openOrg();
+    },
+
+    async openOrg() {
+      if (!A.isOwner()) return;
+      await App.leaveBranch();
+      App.mode = 'org';
+      localStorage.setItem('pz-mode-' + A.current.orgId, 'org');
+      PZ.cloud.subscribeOrg(A.current.orgId, S.onRemoteHook);
+      App.renderShell();
+      if (modeOf((location.hash.replace(/^#\/?/, '') || 'x').split('/')[0]) !== 'org') history.replaceState(null, '', '#/n-resumen');
+      App.route();
     },
 
     async openBranch(branchId) {
@@ -175,20 +292,24 @@
       if (cleanup) { try { cleanup(); } catch (e) { /* noop */ } cleanup = null; }
       await S.flush();
       await S.open(A.current.orgId, branchId);
+      App.mode = 'branch';
       localStorage.setItem('pz-branch-' + A.current.orgId, branchId);
-      PZ.cloud.sb.rpc('touch_login', { p_org: A.current.orgId }).then(() => {}, () => {});
+      if (A.isOwner() && !A.current.support) localStorage.setItem('pz-mode-' + A.current.orgId, 'branch');
+      if (!A.current.support) PZ.cloud.sb.rpc('touch_login', { p_org: A.current.orgId }).then(() => {}, () => {});
+      // Sucursal nueva sin menú: se copia el menú modelo del negocio
+      if (!S.data.categories.length && A.isAdmin()) await S.seedIfEmpty({ example: false });
+      App.renderShell();
+      const cur = (location.hash.replace(/^#\/?/, '') || '').split('/')[0];
+      if (!cur || modeOf(cur) !== 'branch') history.replaceState(null, '', '#/inicio');
+      App.route();
+    },
 
-      // Primer ingreso de un negocio nuevo
-      const onboard = JSON.parse(sessionStorage.getItem('pz-onboard') || 'null');
-      if (onboard) {
-        sessionStorage.removeItem('pz-onboard');
-        if (onboard.menu) S.seedIfEmpty();
-        if (onboard.demo) {
-          App.loading('Horneando 2 semanas de ventas de ejemplo…');
-          try { await PZ.seed.demoHistory(14); } catch (e) { console.error(e); PZ.toast('No se pudieron cargar las ventas de demo', 'warn'); }
-        }
+    async leaveBranch() {
+      if (App.mode === 'branch' && S.data) {
+        if (cleanup) { try { cleanup(); } catch (e) { /* noop */ } cleanup = null; }
+        S.diff();
+        await S.flush();
       }
-      App.start();
     },
 
     /** Pantalla de elección (negocio / sucursal) */
@@ -207,23 +328,64 @@
       });
     },
 
+    /** Elegir sucursal en un modal (desde el panel o la barra superior) */
+    branchPicker(title = '🏪 ¿En qué sucursal querés operar?') {
+      const list = App.allowedBranches();
+      const m = PZ.modal({
+        title,
+        size: 'sm',
+        body: `<div class="pick-list">${list.map((b) => `<button class="pick ${App.mode === 'branch' && b.id === S.ctx.branchId ? 'on' : ''}" data-id="${b.id}"><span class="pick-ico">🏪</span><span><b>${U.esc(b.name)}</b><small>${U.esc((b.settings && b.settings.business && b.settings.business.address) || '')}</small></span><span class="pick-go">${App.mode === 'branch' && b.id === S.ctx.branchId ? '✓' : '→'}</span></button>`).join('')}</div>
+          ${A.isOwner() && App.mode === 'branch' ? '<button class="btn ghost block mt" data-a="panel">🏢 Ir al panel del negocio</button>' : ''}`,
+      });
+      m.el.querySelectorAll('.pick').forEach((b) => b.onclick = async () => {
+        m.close();
+        if (App.mode === 'branch' && b.dataset.id === S.ctx.branchId) return;
+        try { await App.openBranch(b.dataset.id); PZ.toast('Operando en ' + S.branchName()); } catch (e) { PZ.toast(e.message, 'err'); }
+      });
+      const p = m.el.querySelector('[data-a=panel]');
+      if (p) p.onclick = () => { m.close(); App.openOrg(); };
+    },
+
     /* ===================== ESTRUCTURA ===================== */
+    navItems() {
+      const mode = App.mode;
+      if (mode === 'platform') return NAV.platform;
+      if (mode === 'org') return NAV.org.filter((n) => PZ.views[n.id] && (n.id !== 'n-finanzas' || A.feature('gastos')));
+      return NAV.branch.filter((n) => PZ.views[n.id] && A.can(n.id));
+    },
+
     renderShell() {
+      const mode = App.mode;
       const u = A.current;
-      const items = NAV.filter((n) => A.can(n.id) && PZ.views[n.id]);
-      const priority = ['inicio', 'vender', 'pedidos', 'caja', 'sucursales'];
-      const bottom = items.filter((n) => priority.includes(n.id)).slice(0, 4);
+      const items = App.navItems();
+      const bottom = items.filter((n) => BOTTOM[mode].includes(n.id));
       const rest = items.filter((n) => !bottom.includes(n));
-      const orgName = S.ctx.org ? S.ctx.org.name : S.data.settings.business.name;
+      const title = mode === 'platform' ? 'Plataforma' : (S.ctx.org ? S.ctx.org.name : '');
+      const sub = mode === 'platform' ? 'Administración' : mode === 'org' ? 'Panel del negocio' : S.branchName();
+      const name = mode === 'platform' ? ((A.me && A.me.user_metadata && A.me.user_metadata.name) || 'Admin') : u.name;
+      const roleLabel = mode === 'platform' ? 'Plataforma' : u.support ? 'Soporte' : A.ROLES[u.role].label;
+
+      let chips = '';
+      if (mode === 'branch') {
+        chips += `<button class="branch-chip" data-a="branch" title="Cambiar de sucursal">🏪 <span class="bc-txt">${U.esc(S.branchName())}</span>${App.allowedBranches().length > 1 || A.isOwner() ? ' ▾' : ''}</button>`;
+        if (A.isOwner()) chips += '<button class="mode-chip" data-a="panel" title="Panel del negocio">🏢 <span class="mc-txt">Panel</span></button>';
+        chips += '<button class="sync-chip" data-a="sync"></button><button class="cash-chip" data-a="cash"></button>';
+      } else if (mode === 'org') {
+        chips += '<button class="mode-chip primary" data-a="operate" title="Operar en una sucursal">🍕 <span class="mc-txt">Operar en sucursal</span> ▾</button>';
+        if (u.support) chips += '<button class="mode-chip" data-a="platform" title="Volver a la plataforma">🛠️ <span class="mc-txt">Plataforma</span></button>';
+        chips += '<button class="sync-chip" data-a="sync"></button>';
+      }
+
       root().innerHTML = `
-        <div class="shell">
+        <div class="shell mode-${mode}">
           <aside class="sidebar">
-            <div class="brand">${PZ.brandLogo(44)}<div class="brand-txt"><b>${U.esc(orgName)}</b><small>${U.esc(S.branchName())}</small></div></div>
+            <div class="brand">${PZ.brandLogo(44)}<div class="brand-txt"><b>${U.esc(title)}</b><small>${U.esc(sub)}</small></div></div>
+            ${u && u.support ? '<div class="support-tag">🛠️ Modo soporte</div>' : ''}
             <nav class="nav">
               ${items.map((n) => `<a href="#/${n.id}" data-r="${n.id}" title="${n.label}"><span class="n-ico">${n.icon}</span><span class="n-txt">${n.label}</span>${n.id === 'pedidos' ? '<span class="n-count hidden"></span>' : ''}</a>`).join('')}
             </nav>
             <div class="side-foot">
-              <div class="sf-txt"><div style="opacity:.75">Conectado como</div><b>${U.esc(u.name)}</b> · ${A.ROLES[u.role].label}</div>
+              <div class="sf-txt"><div style="opacity:.75">Conectado como</div><b>${U.esc(name)}</b> · ${roleLabel}</div>
               <button class="btn sm ghost block mt" data-a="logout" title="Cerrar sesión" style="color:inherit;box-shadow:inset 0 0 0 2px rgba(255,255,255,.2)">🚪<span class="sf-txt"> Cerrar sesión</span></button>
             </div>
           </aside>
@@ -231,11 +393,9 @@
             <header class="topbar">
               <h2><span class="t-ico"></span><span class="t-txt"></span></h2>
               <div class="spacer"></div>
-              <button class="branch-chip" data-a="branch" title="Cambiar de sucursal">🏪 <span class="bc-txt">${U.esc(S.branchName())}</span>${App.allowedBranches().length > 1 ? ' ▾' : ''}</button>
-              <button class="sync-chip" data-a="sync"></button>
-              <button class="cash-chip" data-a="cash"></button>
+              ${chips}
               <span class="clock"></span>
-              <button class="user-pill" data-a="user" aria-label="Mi usuario"><span class="avatar">${U.esc(u.name[0].toUpperCase())}</span><span class="u-name">${U.esc(u.name)}</span></button>
+              <button class="user-pill" data-a="user" aria-label="Mi usuario"><span class="avatar">${U.esc(name[0].toUpperCase())}</span><span class="u-name">${U.esc(name)}</span></button>
               <svg class="drip" viewBox="0 0 1200 14" preserveAspectRatio="none" aria-hidden="true">
                 <path d="M0 0H1200V3H0Z"/>
                 <path class="d" d="M120 2 q8 0 8 7 q0 5 -8 5 q-8 0 -8 -5 q0 -7 8 -7z"/>
@@ -249,28 +409,39 @@
           </div>
           <nav class="bottom-nav">
             ${bottom.map((n) => `<a href="#/${n.id}" data-r="${n.id}"><span class="b-ico">${n.icon}</span><span class="b-txt">${n.label}</span>${n.id === 'pedidos' ? '<span class="n-count hidden"></span>' : ''}</a>`).join('')}
-            ${rest.length ? '<button data-a="more"><span class="b-ico">☰</span><span class="b-txt">Más</span></button>' : ''}
+            ${rest.length || mode !== 'platform' ? '<button data-a="more"><span class="b-ico">☰</span><span class="b-txt">Más</span></button>' : ''}
           </nav>
         </div>`;
 
       const r = root();
-      r.querySelector('[data-a=logout]').onclick = App.logout;
-      r.querySelector('[data-a=user]').onclick = App.userMenu;
-      r.querySelector('[data-a=branch]').onclick = App.branchMenu;
-      r.querySelector('[data-a=sync]').onclick = App.syncInfo;
-      r.querySelector('[data-a=cash]').onclick = () => (A.can('caja') ? App.go('caja') : null);
-      const more = r.querySelector('[data-a=more]');
-      if (more) more.onclick = () => {
+      const on = (a, fn) => { const b = r.querySelector(`[data-a=${a}]`); if (b) b.onclick = fn; };
+      on('logout', App.logout);
+      on('user', App.userMenu);
+      on('branch', () => App.branchPicker());
+      on('panel', () => App.openOrg());
+      on('operate', () => App.branchPicker());
+      on('platform', () => App.openPlatform());
+      on('sync', App.syncInfo);
+      on('cash', () => (A.can('caja') ? App.go('caja') : null));
+      on('more', () => {
+        const extra = [];
+        if (mode === 'branch' && (App.allowedBranches().length > 1 || A.isOwner())) extra.push('<a href="#" data-x="br"><span>🏪</span>Cambiar sucursal</a>');
+        if (mode === 'branch' && A.isOwner()) extra.push('<a href="#" data-x="panel"><span>🏢</span>Panel del negocio</a>');
+        if (mode === 'org') extra.push('<a href="#" data-x="br"><span>🍕</span>Operar en sucursal</a>');
         const m = PZ.modal({
-          title: 'Más secciones',
-          body: `<div class="more-menu">${rest.map((n) => `<a href="#/${n.id}"><span>${n.icon}</span>${n.label}</a>`).join('')}<a href="#" data-a="br"><span>🏪</span>Cambiar sucursal</a><a href="#" data-a="lo"><span>🚪</span>Salir</a></div>`,
+          title: 'Más',
+          body: `<div class="more-menu">${rest.map((n) => `<a href="#/${n.id}"><span>${n.icon}</span>${n.label}</a>`).join('')}${extra.join('')}<a href="#" data-x="lo"><span>🚪</span>Salir</a></div>`,
         });
         m.el.querySelectorAll('a').forEach((a) => a.addEventListener('click', (e) => {
-          if (a.dataset.a === 'lo') { e.preventDefault(); m.close(); App.logout(); return; }
-          if (a.dataset.a === 'br') { e.preventDefault(); m.close(); App.branchMenu(); return; }
+          const x = a.dataset.x;
+          if (!x) return m.close();
+          e.preventDefault();
           m.close();
+          if (x === 'lo') App.logout();
+          if (x === 'br') App.branchPicker();
+          if (x === 'panel') App.openOrg();
         }));
-      };
+      });
 
       const tick = () => {
         const c = r.querySelector('.clock');
@@ -283,15 +454,11 @@
       App.refreshSync(S.status);
     },
 
-    allowedBranches() {
-      const u = A.current;
-      return S.ctx.branches.filter((b) => b.active && (u.role === 'owner' || !u.branchIds.length || u.branchIds.includes(b.id)));
-    },
-
     refreshChrome() {
       const r = root();
+      if (App.mode !== 'branch' || !S.data) return;
       const chip = r.querySelector('.cash-chip');
-      if (!chip || !S.data) return;
+      if (!chip) return;
       const s = S.currentSession();
       chip.className = 'cash-chip ' + (s ? 'open' : 'closed');
       chip.innerHTML = `<span class="dot"></span><span class="c-txt">${s ? 'Caja abierta' : 'Caja cerrada'}</span>`;
@@ -309,7 +476,7 @@
       if (!el) return;
       const offline = !navigator.onLine;
       let cls = 'ok';
-      let txt = 'Al día';
+      let txt = App.mode === 'org' ? 'En vivo' : 'Al día';
       let ico = '☁️';
       if (offline) { cls = 'off'; ico = '📴'; txt = st.pending ? `Sin conexión · ${st.pending} por enviar` : 'Sin conexión'; }
       else if (st.state === 'syncing') { cls = 'busy'; ico = '⏳'; txt = 'Guardando…'; }
@@ -318,7 +485,6 @@
       else if (st.pending) { cls = 'busy'; ico = '⏳'; txt = `${st.pending} por enviar`; }
       el.className = 'sync-chip ' + cls;
       el.innerHTML = `<span>${ico}</span><span class="s-txt">${txt}</span>`;
-      el.title = offline ? 'Sin internet: seguí trabajando, se sincroniza solo al volver la conexión' : 'Datos guardados en la nube';
     },
 
     syncInfo() {
@@ -330,7 +496,7 @@
           <div class="bank-box">
             <div class="bk-row"><span>Conexión</span><b>${navigator.onLine ? '🟢 En línea' : '🔴 Sin internet'}</b></div>
             <div class="bk-row"><span>Tiempo real</span><b>${PZ.cloud.realtime === 'SUBSCRIBED' ? '🟢 Activo' : '🟡 ' + (PZ.cloud.realtime || 'Conectando')}</b></div>
-            <div class="bk-row"><span>Cambios por enviar</span><b>${st.pending}</b></div>
+            <div class="bk-row"><span>Cambios por enviar</span><b>${st.pending || 0}</b></div>
             <div class="bk-row"><span>Última sincronización</span><b>${st.lastSync ? U.time(st.lastSync) : '—'}</b></div>
           </div>
           <p class="small muted">Todo se guarda primero en este equipo y se sube a la nube apenas hay internet. Si se corta la conexión, podés seguir vendiendo e imprimiendo: se sincroniza solo al volver.</p>
@@ -338,72 +504,76 @@
       });
     },
 
-    branchMenu() {
-      const list = App.allowedBranches();
-      const m = PZ.modal({
-        title: '🏪 Sucursal',
-        size: 'sm',
-        body: `<div class="pick-list">${list.map((b) => `<button class="pick ${b.id === S.ctx.branchId ? 'on' : ''}" data-id="${b.id}"><span class="pick-ico">🏪</span><span><b>${U.esc(b.name)}</b><small>${U.esc((b.settings && b.settings.business && b.settings.business.address) || '')}</small></span><span class="pick-go">${b.id === S.ctx.branchId ? '✓' : '→'}</span></button>`).join('')}</div>
-          ${A.isAdmin() ? '<a class="btn ghost block mt" href="#/sucursales">🏢 Ver todas / estadísticas generales</a>' : ''}`,
-      });
-      m.el.querySelectorAll('.pick').forEach((b) => b.onclick = async () => {
-        m.close();
-        if (b.dataset.id === S.ctx.branchId) return;
-        try { await App.openBranch(b.dataset.id); PZ.toast('Estás en ' + S.branchName()); } catch (e) { PZ.toast(e.message, 'err'); App.start(); }
-      });
-      m.el.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => m.close()));
-    },
-
     userMenu() {
+      const mode = App.mode;
       const u = A.current;
+      const name = mode === 'platform' ? ((A.me && A.me.user_metadata && A.me.user_metadata.name) || 'Admin') : u.name;
+      const items = [];
+      if (mode === 'branch' && A.isOwner()) items.push('<button class="btn ghost block mt" data-a="panel">🏢 Panel del negocio</button>');
+      if (mode === 'org') items.push('<button class="btn ghost block mt" data-a="operate">🍕 Operar en una sucursal</button>');
+      if (A.platform && mode !== 'platform') items.push('<button class="btn ghost block mt" data-a="platform">🛠️ Volver a la plataforma</button>');
+      if (!A.platform && A.memberships.length > 1) items.push('<button class="btn ghost block mt" data-a="org">🔀 Cambiar de negocio</button>');
+      if (!(u && u.support)) items.push('<button class="btn ghost block mt" data-a="pass">🔑 Cambiar mi contraseña</button>');
       const m = PZ.modal({
-        title: `Hola, ${U.esc(u.name)} 👋`,
+        title: `Hola, ${U.esc(name)} 👋`,
         size: 'sm',
         body: `
-          <p class="muted" style="margin-top:0">${A.ROLES[u.role].label} · ${U.esc(S.ctx.org ? S.ctx.org.name : '')}<br><span class="small">${U.esc(u.username)}</span></p>
+          <p class="muted" style="margin-top:0">${mode === 'platform' ? 'Administrador de la plataforma' : `${u.support ? 'Soporte' : A.ROLES[u.role].label} · ${U.esc(S.ctx.org ? S.ctx.org.name : '')}`}</p>
           <div class="opt-section">Sabor del sistema (en este equipo)</div>
           <div class="flavor-dots" style="justify-content:flex-start">${flavorDots(App.theme())}</div>
-          ${A.memberships.length > 1 ? '<button class="btn ghost block mt" data-a="org">🔀 Cambiar de negocio</button>' : ''}
-          <button class="btn ghost block mt" data-a="pass">🔑 Cambiar mi contraseña</button>
+          ${items.join('')}
           <button class="btn danger block mt" data-a="out">🚪 Cerrar sesión</button>`,
       });
       App.bindFlavors(m.el);
-      m.el.querySelector('[data-a=out]').onclick = () => { m.close(); App.logout(); };
-      const org = m.el.querySelector('[data-a=org]');
-      if (org) org.onclick = () => { m.close(); localStorage.removeItem('pz-org'); App.enter(A.memberships).catch((e) => App.renderLogin('login', e.message)); };
-      m.el.querySelector('[data-a=pass]').onclick = async () => {
-        m.close();
+      const on = (a, fn) => { const b = m.el.querySelector(`[data-a=${a}]`); if (b) b.onclick = () => { m.close(); fn(); }; };
+      on('out', App.logout);
+      on('panel', App.openOrg);
+      on('operate', () => App.branchPicker());
+      on('platform', App.openPlatform);
+      on('org', () => { localStorage.removeItem('pz-org'); App.enter().catch((e) => App.renderLogin(e.message)); });
+      on('pass', async () => {
         const p = await PZ.prompt('Nueva contraseña (mínimo 8 caracteres)', { type: 'password', title: 'Cambiar contraseña' });
         if (p == null) return;
         if (p.length < 8) return PZ.toast('La contraseña es muy corta', 'warn');
         try { await PZ.cloud.updateMyPassword(p); PZ.toast('Contraseña actualizada'); } catch (e) { PZ.toast(e.message, 'err'); }
-      };
+      });
     },
 
     async logout() {
-      if (S.status.pending && !(await PZ.confirm(`Hay ${S.status.pending} cambio(s) que todavía no se enviaron a la nube. Si cerrás sesión se envían la próxima vez que ingreses en este equipo. ¿Salir igual?`))) return;
+      if (S.status.pending && !(await PZ.confirm(`Hay ${S.status.pending} cambio(s) que todavía no se enviaron a la nube. Se envían la próxima vez que ingreses en este equipo. ¿Salir igual?`))) return;
       if (cleanup) { try { cleanup(); } catch (e) { /* noop */ } cleanup = null; }
       await S.flush();
       await A.logout();
+      App.mode = null;
       location.hash = '';
       App.renderLogin();
     },
 
     /* ===================== NAVEGACIÓN ===================== */
     route() {
-      if (!A.current || !S.data) return;
-      if (!document.getElementById('view')) App.renderShell();
+      if (!App.mode) return;
+      if (App.mode !== 'platform' && !A.current) return;
+      if (App.mode === 'branch' && !S.data) return;
       const [name, ...params] = (location.hash.replace(/^#\/?/, '') || '').split('/');
-      const allowed = NAV.filter((n) => A.can(n.id) && PZ.views[n.id]);
-      const id = name && allowed.some((n) => n.id === name) ? name : allowed[0].id;
-      if (!name || id !== name) history.replaceState(null, '', '#/' + id);
+
+      // Un link a otro nivel cambia de nivel (si tiene permiso)
+      if (name && PZ.views[name] && modeOf(name) !== App.mode) {
+        const target = modeOf(name);
+        if (target === 'org' && A.isOwner()) return App.openOrg();
+        if (target === 'platform' && A.platform) return App.openPlatform();
+        if (target === 'branch' && A.current) return App.openBranch(S.ctx.branchId || App.allowedBranches()[0].id);
+      }
+      if (!document.getElementById('view')) App.renderShell();
+      const items = App.navItems();
+      const id = name && items.some((n) => n.id === name) ? name : items[0].id;
+      if (id !== name) history.replaceState(null, '', '#/' + id);
       const view = PZ.views[id];
-      const nav = NAV.find((n) => n.id === id);
+      const nav = items.find((n) => n.id === id);
       if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
       document.querySelectorAll('[data-r]').forEach((a) => a.classList.toggle('on', a.dataset.r === id));
       document.querySelector('.topbar .t-ico').textContent = nav.icon;
       document.querySelector('.topbar .t-txt').textContent = view.title || nav.label;
-      document.title = `${nav.label} · ${S.branchName()}`;
+      document.title = `${nav.label} · ${App.mode === 'branch' ? S.branchName() : App.mode === 'org' ? (S.ctx.org ? S.ctx.org.name : '') : 'Plataforma'}`;
       const el = document.getElementById('view');
       el.innerHTML = '';
       el.style.animation = 'none';
@@ -417,17 +587,11 @@
         el.innerHTML = `<div class="card empty"><span class="e-ico">🔥</span>Se quemó la pizza: ${U.esc(e.message)}</div>`;
       }
     },
-
-    start() {
-      App.applyTheme();
-      App.renderShell();
-      App.route();
-    },
   });
 
   /* ===================== Tablas adaptables ===================== */
-  // En pantallas chicas cada fila de tabla se muestra como tarjeta; para eso
-  // cada celda necesita la etiqueta de su columna.
+  // En pantallas chicas cada fila se muestra como tarjeta; cada celda
+  // necesita la etiqueta de su columna.
   function labelTables(scope) {
     scope.querySelectorAll('table.tbl').forEach((t) => {
       const heads = Array.from(t.querySelectorAll('thead th')).map((th) => th.textContent.trim());
@@ -451,24 +615,30 @@
     S.onRemoteHook = U.debounce(() => {
       const v = PZ.views[App.currentView];
       if (v && v.live && !document.querySelector('.modal-back')) App.route();
-    }, 350);
+    }, 600);
 
-    const boot = document.getElementById('boot');
-    const hideBoot = () => { boot.style.opacity = '0'; setTimeout(() => boot.remove(), 400); };
+    const bootEl = document.getElementById('boot');
+    const hideBoot = () => { bootEl.style.opacity = '0'; setTimeout(() => bootEl.remove(), 400); };
     try {
       const session = await PZ.cloud.session();
       if (!session) { hideBoot(); return App.renderLogin(); }
-      let memberships;
-      try { memberships = await PZ.cloud.memberships(); localStorage.setItem('pz-memberships', JSON.stringify(memberships)); }
-      catch (e) { memberships = JSON.parse(localStorage.getItem('pz-memberships') || '[]'); }
-      A.memberships = memberships;
+      A.me = session.user;
+      try {
+        A.platform = await PZ.cloud.isPlatformAdmin();
+        A.memberships = await PZ.cloud.memberships();
+        localStorage.setItem('pz-memberships', JSON.stringify(A.memberships));
+        localStorage.setItem('pz-platform', A.platform ? '1' : '');
+      } catch (e) {
+        A.platform = localStorage.getItem('pz-platform') === '1';
+        A.memberships = JSON.parse(localStorage.getItem('pz-memberships') || '[]');
+      }
       hideBoot();
-      if (!memberships.length) return App.renderLogin();
-      await App.enter(memberships);
+      if (!A.platform && !A.memberships.length) return App.renderLogin('Tu usuario no tiene acceso a ningún negocio activo.');
+      await App.enter();
     } catch (e) {
       console.error(e);
       hideBoot();
-      App.renderLogin('login', e.message);
+      App.renderLogin(e.message);
     }
 
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
