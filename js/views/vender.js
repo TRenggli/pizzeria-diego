@@ -418,8 +418,8 @@
         body: `
           <div class="pay-total"><div class="pt-label">Total a cobrar</div><div class="pt-value"></div><div class="pt-adj small muted"></div></div>
           <div class="pay-methods">${methods.map((k) => `<button class="pay-m" data-m="${k}"><span>${L().methodIcon[k]}</span>${L().method[k].split(' ')[0]}</button>`).join('')}</div>
-          <div class="pay-detail mt"></div>
           <div class="split-box"></div>
+          <div class="pay-detail mt"></div>
           <label class="check mt"><input type="checkbox" class="split-t"> Pago mixto (dividir entre varios medios)</label>
           <div class="row-flex" style="gap:16px">
             <label class="check"><input type="checkbox" class="opt-print" ${st.ticket.autoPrint ? 'checked' : ''}> 🖨️ Imprimir ticket</label>
@@ -438,24 +438,54 @@
         const a = adjustFor(method);
         E.querySelector('.pt-adj').textContent = split ? `Pagado ${U.money(paidSoFar())} de ${U.money(base)}` : a.cashDiscount ? `Incluye ${P.cashDiscountPct}% de descuento por efectivo (-${U.money(a.cashDiscount)})` : a.surcharge ? `Incluye ${P.cardSurchargePct}% de recargo por tarjeta (+${U.money(a.surcharge)})` : '';
 
+        const sb = E.querySelector('.split-box');
+        sb.innerHTML = split ? `<div class="split-list mt">${partials.map((p, i) => `<div class="sp"><span>${L().methodIcon[p.method]} ${L().method[p.method]}${p.ref ? ' · ' + U.esc(p.ref) : ''}</span><span>${U.money(p.amount)} <button class="icon-btn" data-rm="${i}">✕</button></span></div>`).join('')}
+          ${d > 0 ? `<label class="field"><span>¿Cuánto paga con ${L().method[method]}? (esta parte)</span><input class="part" inputmode="numeric" value="${d}"></label>` : ''}</div>` : '';
+        sb.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { partials.splice(Number(b.dataset.rm), 1); draw(); });
+
         if (method === 'efectivo') {
-          const suggestions = [...new Set([d, Math.ceil(d / 1000) * 1000, Math.ceil(d / 5000) * 5000, Math.ceil(d / 10000) * 10000, Math.ceil(d / 20000) * 20000])].filter((v) => v >= d).slice(0, 5);
+          // En pago mixto, el vuelto se calcula sobre la parte en efectivo
+          const base = () => (split ? Math.min(d, U.parseMoney((E.querySelector('.part') || {}).value) || d) : d);
+          const b0 = base();
+          const suggestions = [...new Set([Math.ceil(b0 / 1000) * 1000, Math.ceil(b0 / 5000) * 5000, Math.ceil(b0 / 10000) * 10000, Math.ceil(b0 / 20000) * 20000])].filter((v) => v > b0).slice(0, 3);
           detail.innerHTML = `
-            <label class="field"><span>¿Con cuánto paga?</span><input class="tendered" inputmode="numeric" placeholder="${U.money(d)}" autofocus></label>
-            <div class="bills">${suggestions.map((v, i) => `<button data-b="${v}">${i === 0 ? 'Justo ' : ''}${U.money(v)}</button>`).join('')}</div>
+            <div class="opt-section" style="margin-top:0">¿Con cuánto paga el cliente?</div>
+            <div class="bills">
+              <button data-b="${b0}">✓ Justo ${U.money(b0)}</button>
+              ${suggestions.map((v) => `<button data-b="${v}">${U.money(v)}</button>`).join('')}
+              <button data-b="other" class="other">✏️ Otro monto</button>
+            </div>
+            <label class="field tendered-field"><span>Monto que entrega (escribilo si es otro)</span>
+              <input class="tendered" inputmode="numeric" placeholder="Ej: 23000" autocomplete="off"></label>
             <div class="change-box"><span>Vuelto</span><b class="chg">${U.money(0)}</b></div>`;
           const inp = detail.querySelector('.tendered');
+          const chips = detail.querySelectorAll('[data-b]');
           const upd = () => {
             const v = U.parseMoney(inp.value);
             const box = detail.querySelector('.change-box');
-            const diff = v - d;
+            const diff = v - base();
             box.classList.toggle('neg', !!inp.value && diff < 0);
-            box.querySelector('span').textContent = inp.value && diff < 0 ? 'Falta' : 'Vuelto';
+            box.querySelector('span').textContent = !inp.value ? 'Vuelto' : diff < 0 ? 'Falta' : `Paga con ${U.money(v)} · vuelto`;
             detail.querySelector('.chg').textContent = U.money(inp.value ? Math.abs(diff) : 0);
+            chips.forEach((c) => c.classList.toggle('on', c.dataset.b !== 'other' && Number(c.dataset.b) === v));
           };
-          inp.addEventListener('input', upd);
+          inp.addEventListener('input', () => { detail.querySelector('.other').classList.remove('on'); upd(); });
           inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') E.querySelector('[data-a=ok]').click(); });
-          detail.querySelectorAll('[data-b]').forEach((b) => b.onclick = () => { inp.value = b.dataset.b; upd(); });
+          chips.forEach((b) => b.onclick = () => {
+            if (b.dataset.b === 'other') {
+              inp.value = '';
+              upd();
+              b.classList.add('on');
+              detail.querySelector('.tendered-field').classList.add('pulse');
+              setTimeout(() => detail.querySelector('.tendered-field').classList.remove('pulse'), 700);
+              inp.focus();
+              return;
+            }
+            inp.value = b.dataset.b;
+            upd();
+          });
+          const part = E.querySelector('.part');
+          if (part) part.oninput = upd;
           setTimeout(() => inp.focus(), 50);
         } else if (method === 'transferencia') {
           const row = (label, v) => v ? `<div class="bk-row"><span class="muted">${label}</span><b>${U.esc(v)}</b><button class="btn sm ghost" data-copy="${U.esc(v)}">Copiar</button></div>` : '';
@@ -477,11 +507,6 @@
         detail.querySelectorAll('[data-copy]').forEach((b) => b.onclick = async () => {
           try { await navigator.clipboard.writeText(b.dataset.copy); PZ.toast('Copiado'); } catch (e) { PZ.toast('No se pudo copiar', 'warn'); }
         });
-
-        const sb = E.querySelector('.split-box');
-        sb.innerHTML = split ? `<div class="split-list mt">${partials.map((p, i) => `<div class="sp"><span>${L().methodIcon[p.method]} ${L().method[p.method]}${p.ref ? ' · ' + U.esc(p.ref) : ''}</span><span>${U.money(p.amount)} <button class="icon-btn" data-rm="${i}">✕</button></span></div>`).join('')}
-          ${d > 0 ? `<label class="field"><span>Monto a cobrar con ${L().method[method]}</span><input class="part" inputmode="numeric" value="${d}"></label>` : ''}</div>` : '';
-        sb.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { partials.splice(Number(b.dataset.rm), 1); draw(); });
 
         const ok = E.querySelector('[data-a=ok]');
         ok.textContent = split && d > 0 ? `Agregar pago` : `✅ Confirmar ${U.money(split ? base : totalFor(method))}`;

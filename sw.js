@@ -1,5 +1,5 @@
 /* Service worker: la app funciona sin internet una vez cargada. */
-const CACHE = 'pizzeria-v3';
+const CACHE = 'pizzeria-v4';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/styles.css', './css/responsive.css', './img/icon.svg', './vendor/qrcode.js', './vendor/supabase.js', './js/config.js', './js/cloud.js', './js/seed.js', './js/views/negocio.js', './js/views/equipo.js', './js/views/gastos.js', './js/views/plataforma.js',
   './js/core.js', './js/store.js', './js/auth.js', './js/ticket.js', './js/charts.js', './js/app.js',
