@@ -32,16 +32,7 @@ Cada sucursal tiene su propio menú, precios, clientes, pedidos, caja, stock y g
 
 ## Accesos de demostración
 
-| Usuario | Contraseña | Nivel |
-|---|---|---|
-| `tomas` | *(la que te pasé, cambiala)* | Plataforma |
-| `demo@pizzeriadiego.app` | `Pizza2026` | Dueño de Pizzería Diego (Centro y Palermo) |
-| `sofia.centro` | `pizza1234` | Encargada de Centro |
-| `martin.centro` | `pizza1234` | Cajero de Centro |
-| `cocina.centro` | `pizza1234` | Cocina de Centro |
-| `julian.palermo` | `pizza1234` | Encargado de Palermo |
-| `ana.palermo` / `caja.palermo` | `pizza1234` / `caja1234` | Cajeros de Palermo |
-| `marcos.esquina` | `Esquina2026` | Dueño de "La Esquina Pizzas" (ejemplo de negocio de una persona, sin mesas ni gastos) |
+Los usuarios y contraseñas de prueba se comparten por privado (no se publican en el repositorio).
 
 ## Módulos por negocio
 
