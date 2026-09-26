@@ -1,0 +1,2 @@
+-- Datos de prueba del entorno local (supabase start). Vacío por ahora:
+-- los usuarios y negocios de prueba se crean con las funciones de la app.
